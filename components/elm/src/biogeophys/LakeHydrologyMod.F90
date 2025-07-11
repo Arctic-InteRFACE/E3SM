@@ -118,6 +118,9 @@ contains
     real(r8) :: snowcap_scl_fct                                 ! temporary factor used to correct for snow capping
     real(r8), parameter :: snow_bd = 250._r8                    ! assumed snow bulk density (for lakes w/out resolved snow layers) [kg/m^3]
                                                                 ! Should only be used for frost below.
+    real(r8), :: beta                                           ! parameter that limits lake evaporation based on storage amount
+    real(r8), parameter :: shape = 1._r8                        ! parameter that controls the shape of the lake evaporation limitation
+
     !-----------------------------------------------------------------------
 
     associate(                                                            & 
@@ -380,7 +383,12 @@ contains
                ! snow layer than there is there, create temp. limited evap_soi.
                qflx_evap_soi_lim = min(qflx_evap_soi(p), (h2osoi_liq(c,j)+h2osoi_ice(c,j))/dtime)
                if ((h2osoi_liq(c,j)+h2osoi_ice(c,j)) > 0._r8) then
-                  qflx_evap_grnd(p) = max(qflx_evap_soi_lim*(h2osoi_liq(c,j)/(h2osoi_liq(c,j)+h2osoi_ice(c,j))), 0._r8)
+                  if (use_lake_wat_storage) then
+                    beta = max((1._r8 - wslake(c)/5000._r8)**shp,0._r8)
+                  else
+                    beta = 1._r8
+                  endif
+                  qflx_evap_grnd(p) = max(beta*qflx_evap_soi_lim*(h2osoi_liq(c,j)/(h2osoi_liq(c,j)+h2osoi_ice(c,j))), 0._r8)
                else
                   qflx_evap_grnd(p) = 0._r8
                end if
@@ -410,7 +418,14 @@ contains
                ! Sublimation: do not allow for more sublimation than there is snow
                ! after melt.  Remaining surface evaporation used for infiltration.
                qflx_sub_snow(p) = min(qflx_evap_soi(p), h2osno(c)/dtime)
-               qflx_evap_grnd(p) = qflx_evap_soi(p) - qflx_sub_snow(p)
+               ! limit qflx_evap_ground if use_lake_wat_storage
+               if (use_lake_wat_storage) then
+                 if (use_lake_wat_storage) then
+                   beta = max((1._r8 - wslake(c)/5000._r8)**shp,0._r8)
+                 else
+                   beta = 1._r8
+                 endif
+               qflx_evap_grnd(p) = max(beta*qflx_evap_soi(p) - qflx_sub_snow(p),0._r8)
             else
                if (t_grnd(c) < tfrz-0.1_r8) then
                   qflx_dew_snow(p) = abs(qflx_evap_soi(p))
