@@ -118,8 +118,8 @@ contains
     real(r8) :: snowcap_scl_fct                                 ! temporary factor used to correct for snow capping
     real(r8), parameter :: snow_bd = 250._r8                    ! assumed snow bulk density (for lakes w/out resolved snow layers) [kg/m^3]
                                                                 ! Should only be used for frost below.
-    real(r8), :: beta                                           ! parameter that limits lake evaporation based on storage amount
-    real(r8), parameter :: shape = 1._r8                        ! parameter that controls the shape of the lake evaporation limitation
+    real(r8) :: beta                                            ! parameter that limits lake evaporation based on storage amount
+    real(r8), parameter :: shp = 1._r8                          ! parameter that controls the shape of the lake evaporation limitation
 
     !-----------------------------------------------------------------------
 
@@ -420,11 +420,10 @@ contains
                qflx_sub_snow(p) = min(qflx_evap_soi(p), h2osno(c)/dtime)
                ! limit qflx_evap_ground if use_lake_wat_storage
                if (use_lake_wat_storage) then
-                 if (use_lake_wat_storage) then
-                   beta = max((1._r8 - wslake(c)/5000._r8)**shp,0._r8)
-                 else
-                   beta = 1._r8
-                 endif
+                 beta = max((1._r8 - wslake(c)/5000._r8)**shp,0._r8)
+               else
+                 beta = 1._r8
+               endif
                qflx_evap_grnd(p) = max(beta*qflx_evap_soi(p) - qflx_sub_snow(p),0._r8)
             else
                if (t_grnd(c) < tfrz-0.1_r8) then
