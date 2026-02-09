@@ -662,7 +662,12 @@ contains
 
       real (kind=RKIND), dimension(:), pointer, contiguous :: &
          sedimentBottomFlux, & ! kg/m2/s
-         netSedimentStorage    ! kg/m2
+         netSedimentStorage, & ! kg/m2
+         netErosionFlux,     & ! kg/m2/s
+         bottomStressCell      ! kg/m/s2
+
+      real (kind=RKIND), dimension(:,:), pointer, contiguous :: &
+         normalVelocity   ! normal velocity
 
       ! Scratch Arrays
       real (kind=RKIND), dimension(:,:), allocatable :: &
@@ -705,6 +710,8 @@ contains
       ! retrieve data from pools 
       call mpas_pool_get_subpool(statePool,   'tracers', &
                                                tracersPool)
+      call mpas_pool_get_array(statePool,     'normalVelocity', & 
+                                               normalVelocity, timeLevel)
       call mpas_pool_get_subpool(tendPool,    'tracersTend', &
                                                tracersTendPool)
       call mpas_pool_get_subpool(forcingPool, 'tracersSurfaceFlux', &
@@ -882,7 +889,7 @@ contains
             !Sediment Type   :Unaggregated mud ; Aggregated mud ; Very fine sand; Coarse sand; Pebbles/Gravel
             !Velocities(mm/s):         .1 ; 1.0 ; 15; 90; 1000.  
             sinkTracer = indexTracer
-            sinkingRate =  -0.001_RKIND   ! Should this be negative? 
+            sinkingRate =  -0.001_RKIND   ! m/s
          endif
 
          ! Get Array of total surface temp/salt flux 
@@ -1246,13 +1253,22 @@ contains
                                      'sedimentBottomFlux', & 
                                      sedimentBottomFlux)  
          call mpas_pool_get_array(ecosysAuxiliaryPool, &                                       
+                                     'netErosionFlux', & 
+                                     netErosionFlux)  
+         call mpas_pool_get_array(ecosysAuxiliaryPool, &                                       
                                      'netSedimentStorage', & 
                                      netSedimentStorage)  
+         call mpas_pool_get_array(ecosysAuxiliaryPool, &                                       
+                                     'bottomStressCell', & 
+                                     bottomStressCell)  
+
          call ocn_tracer_advection_tend(tracerGroup, &
                             normalThicknessFlux, vertAleTransportTop, &
                             layerThickness, dt, tracerGroupTend, &
                             computeBudgets, skipTracer, sinkingRate, &
-                            sinkTracer,sedimentBottomFlux,netSedimentStorage)
+                            sinkTracer,sedimentBottomFlux,netSedimentStorage, &
+                            normalVelocity, kineticEnergyCell, bottomStressCell, &
+                            layerThickEdgeDrag, netErosionFlux)
 
          
          deallocate(skipTracer)

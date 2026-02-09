@@ -68,8 +68,12 @@ module ocn_tracer_advection_mono
                                         tend, tracers, layerThickness, &
                                         normalThicknessFlux, w, dt,    &
                                         computeBudgets, skipTracer,    &
-                                        sinkTracer, sinkingRate, &
-                                        sedimentBottomFlux, netSedimentStorage) !{{{
+                                        sinkTracer, sinkingRate,       &
+                                        sedimentBottomFlux,            &
+                                        netSedimentStorage,            &
+                                        normalVelocity, KECell,        &
+                                        layerThickEdgeDrag,            &
+                                        bottomStressCell, netErosionFlux) !{{{
 
       !-----------------------------------------------------------------
       ! Input/Output parameters
@@ -84,12 +88,23 @@ module ocn_tracer_advection_mono
       real (kind=RKIND), dimension(:), intent(inout) :: &
          sedimentBottomFlux  !< [out]  sediment bottom flux (kg/m2/s)
 
+      real (kind=RKIND), dimension(:), intent(inout) :: &
+         netErosionFlux      !< [out]  bottom sediment erosion flux (kg/m2/s)
+
+      real (kind=RKIND), dimension(:), intent(out) :: &
+         bottomStressCell  !< [out]  bottom shear stress (kg/m/s2)
+
       !-----------------------------------------------------------------
       ! Input parameters
       !-----------------------------------------------------------------
 
       real (kind=RKIND), dimension(:,:,:), intent(in) :: &
          tracers               !< [in] Current tracer values
+
+      real (kind=RKIND), dimension(:,:), intent(in) :: &
+         normalVelocity,    &!< [in] normal velocity
+         KECell,            &!< [in] kinetic energy at cell
+         layerThickEdgeDrag  !< [in] mean layer thickness at edge
 
       real (kind=RKIND), dimension(:,:), intent(in) :: &
          layerThickness,      &!< [in] Thickness
@@ -179,6 +194,9 @@ module ocn_tracer_advection_mono
       !$acc enter data create(tracerCur, tracerMin, tracerMax, &
       !$acc                   hNewInv, hProv, hProvInv, flxIn, flxOut, &
       !$acc                   hNew, workTend, lowOrderFlx, highOrderFlx)
+
+      call ocn_compute_bottom_shear_stress(normalVelocity, &
+                   kineticEnergyCell, layerThickEdgeDrag, bottomStressCell)
 
 #ifdef _ADV_TIMERS
       call mpas_timer_stop('allocates')
@@ -990,7 +1008,7 @@ module ocn_tracer_advection_mono
            !$acc    present(flxIn, tracerCur, hProv, hNewInv, &
            !$acc            workTend, cellMask, &
            !$acc            activeTracerVerticalAdvectionTendency, &
-           !$acc            minLevelCell, maxLevelCell) &
+           !$acc            minLevelCell, maxLevelCell, bottomStressCell) &
            !$acc    private(k, kmin, kmax)
 #else
            !$omp parallel
@@ -1010,7 +1028,7 @@ module ocn_tracer_advection_mono
            kmax = maxLevelCell(iCell)
            call ocn_sediment_settling_flx (flxIn(:,iCell),sinkingRate, workTend(:,iCell), &
                  hNew(:,iCell), dt, kmin, kmax, sedimentBottomFlux(iCell), &
-                 netSedimentStorage(iCell))
+                 netSedimentStorage(iCell),bottomStressCell(iCell),netErosionFlux(iCell))
 
            do k = kmin,kmax
               activeTracerVerticalAdvectionTendency(iTracer,k,iCell) = &

@@ -706,11 +706,17 @@
 			<var name="PH_PREV_ALT_CO2_3D" type="real" dimensions="nVertLevels nCells Time" units="pH"
 				description="pH (3D) of alternate CO2 from previous timestep"
 			/>
+			<var name="bottomStressCell" type="real" dimensions="nCells Time" units="kg m^{-1} s^{-2}"
+				description="Bottom shear stress for erosion calculation"
+			/>
 			<var name="sedimentBottomFlux" type="real" dimensions="nCells Time" units="kg m^{-3} m s^{-1}"
 				description="Sediment flux to the sea floor"
 			/>
 			<var name="netSedimentStorage" type="real" dimensions="nCells Time" units="kg m^{-2}"
 				description="Sediment accumulation on the sea floor"
+			/>
+			<var name="netErosionFlux" type="real" dimensions="nCells Time" units="kg m^{-3} m s^{-1}"
+				description="Erosion flux from the sea floor to the ocean bottom"
 			/>
 			<var name="FESEDFLUX" type="real" dimensions="nVertLevels nCells Time" units="mmol Fe m^{-3} m s^{-1}"
 				description="Sedimentary Fe Flux"

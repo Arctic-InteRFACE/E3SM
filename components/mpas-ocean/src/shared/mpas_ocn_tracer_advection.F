@@ -66,8 +66,13 @@ module ocn_tracer_advection
    subroutine ocn_tracer_advection_tend(tracers, normalThicknessFlux, &
                                         w, layerThickness, dt, tend,  &
                                         computeBudgets, skipTracer,   &
-                                        sinkingRate, sinkTracer, &
-                                        sedimentBottomFlux,netSedimentStorage)!{{{
+                                        sinkingRate, sinkTracer,      &
+                                        sedimentBottomFlux,           &
+                                        netSedimentStorage,           &
+                                        normalVelocity, KECell,       &
+                                        bottomStressCell,             &
+                                        layerThickEdgeDrag,           &
+                                        netErosionFlux)!{{{
 
       !*** Input/Output parameters
 
@@ -80,10 +85,21 @@ module ocn_tracer_advection
       real (kind=RKIND), dimension(:), intent(inout) :: &
          sedimentBottomFlux  !< [out]  sediment bottom flux (kg/m2/s)
 
+      real (kind=RKIND), dimension(:), intent(inout) :: &
+         netErosionFlux  !< [out]  sediment flux from bottom erosion (kg/m2/s)
+
+      real (kind=RKIND), dimension(:), intent(out) :: &
+         bottomStressCell  !< [out]  bottom shear stress (kg/m/s2)
+
       !*** Input parameters
 
       real (kind=RKIND), dimension(:,:,:), intent(in) :: &
          tracers               !< [in] Current tracer values
+
+      real (kind=RKIND), dimension(:,:), intent(in) :: &
+         normalVelocity,    &!< [in] normal velocity
+         KECell,            &!< [in] kinetic energy at cell
+         layerThickEdgeDrag  !< [in] mean layer thickness at edge
 
       real (kind=RKIND), dimension(:,:), intent(in) :: &
          normalThicknessFlux, &!< [in] Thickness weighted horiz velocity
@@ -120,7 +136,11 @@ module ocn_tracer_advection
                                              normalThicknessFlux, w, dt,       &
                                              computeBudgets, skipTracer,       &
                                              sinkTracer, sinkingRate,          &
-                                             sedimentBottomFlux, netSedimentStorage)
+                                             sedimentBottomFlux, netSedimentStorage, &
+                                             normalVelocity, KECell,           &
+                                             layerThickEdgeDrag,               &
+                                             bottomStressCell,                 &
+                                             netErosionFlux)
       else
          call ocn_tracer_advection_std_tend(tracers, normalThicknessFlux, &
                                             w, layerThickness, dt, tend,  &

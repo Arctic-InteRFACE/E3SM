@@ -1898,7 +1898,8 @@ contains
 !  copies no3, nh4, iron deposition fluxes into output flux arrays
 !  uses dust flux to calculate po4 and sio3 deposition fluxes
 
-      call marbl_instances(1)%surface_flux_compute()
+      !NJ remove for sediment testing
+      !call marbl_instances(1)%surface_flux_compute()
 
       if (marbl_instances(1)%StatusLog%labort_marbl) &
 ! maltrud ignore abort warning
@@ -1969,47 +1970,57 @@ contains
          ecosysSurfaceFlux(doc_ind_MPAS,iCell) =  &
             ecosysSurfaceFlux(doc_ind_MPAS,iCell) + riverFluxDOC(iCell) * 0.8_RKIND
 
+         ! NJ: zero out ecosystem surface fluxes for sediment testing
+         do n = 1, ecosys_tracer_cnt
+            ecosysSurfaceFlux(ecosysIndexMARBLtoMPASO(n),iCell) =  &
+               0.0_RKIND
+         end do
+
          !NJ-Sed -- Syvitski2002: Sediment load for the 10 major Arctic rivers is 0.194 +- 0.297 is kg/m3 
          ! (i.e.  the concentration of sediments per volume flux of river water)
          !ecosysSurfaceFlux(docr_ind_MPAS,iCell) =  &
          !   ecosysSurfaceFlux(docr_ind_MPAS,iCell) + riverFluxDOC(iCell) * 0.2_RKIND
+
+         ! only include docr for sediments
 
          ecosysSurfaceFlux(docr_ind_MPAS,iCell) =  &
             ecosysSurfaceFlux(docr_ind_MPAS,iCell) + max(0.0_RKIND,riverRunoffFlux(iCell))/rho_fw * 0.194_RKIND
 
 ! now add contribution from sea ice fluxes if available (assume MKS)
          if (config_use_ecosysTracers_sea_ice_coupling) then
-            ecosysSurfaceFlux(no3_ind_MPAS,iCell) =  &
-               ecosysSurfaceFlux(no3_ind_MPAS,iCell) + iceFluxNO3(iCell)
-            ecosysSurfaceFlux(don_ind_MPAS,iCell) =  &
-               ecosysSurfaceFlux(don_ind_MPAS,iCell) + iceFluxDON(iCell)
-            ecosysSurfaceFlux(nh4_ind_MPAS,iCell) =  &
-               ecosysSurfaceFlux(nh4_ind_MPAS,iCell) + iceFluxNH4(iCell)
-            ecosysSurfaceFlux(sio3_ind_MPAS,iCell) =  &
-               ecosysSurfaceFlux(sio3_ind_MPAS,iCell) + iceFluxSiO3(iCell)
-            ecosysSurfaceFlux(fe_ind_MPAS,iCell) =  &
-               ecosysSurfaceFlux(fe_ind_MPAS,iCell) + iceFluxFeDissolved(iCell)/parm_Fe_bioavail
-            ecosysSurfaceFlux(dic_ind_MPAS,iCell) =  &
-               ecosysSurfaceFlux(dic_ind_MPAS,iCell) + iceFluxDIC(iCell)
-            ecosysSurfaceFlux(alk_ind_MPAS,iCell) =  &
-               ecosysSurfaceFlux(alk_ind_MPAS,iCell) + iceFluxDIC(iCell)
-            ecosysSurfaceFlux(dic_alt_co2_ind_MPAS,iCell) =  &
-               ecosysSurfaceFlux(dic_alt_co2_ind_MPAS,iCell) + iceFluxDIC(iCell)
-            ecosysSurfaceFlux(doc_ind_MPAS,iCell) =  &
-               ecosysSurfaceFlux(doc_ind_MPAS,iCell) + iceFluxDOC(1,iCell) + iceFluxDOC(2,iCell) &
-               + iceFluxDOC(3,iCell)
-!NJ
+            !ecosysSurfaceFlux(no3_ind_MPAS,iCell) =  &
+            !   ecosysSurfaceFlux(no3_ind_MPAS,iCell) + iceFluxNO3(iCell)
+            !ecosysSurfaceFlux(don_ind_MPAS,iCell) =  &
+            !   ecosysSurfaceFlux(don_ind_MPAS,iCell) + iceFluxDON(iCell)
+            !ecosysSurfaceFlux(nh4_ind_MPAS,iCell) =  &
+            !   ecosysSurfaceFlux(nh4_ind_MPAS,iCell) + iceFluxNH4(iCell)
+            !ecosysSurfaceFlux(sio3_ind_MPAS,iCell) =  &
+            !   ecosysSurfaceFlux(sio3_ind_MPAS,iCell) + iceFluxSiO3(iCell)
+            !ecosysSurfaceFlux(fe_ind_MPAS,iCell) =  &
+            !   ecosysSurfaceFlux(fe_ind_MPAS,iCell) + iceFluxFeDissolved(iCell)/parm_Fe_bioavail
+            !ecosysSurfaceFlux(dic_ind_MPAS,iCell) =  &
+            !   ecosysSurfaceFlux(dic_ind_MPAS,iCell) + iceFluxDIC(iCell)
+            !ecosysSurfaceFlux(alk_ind_MPAS,iCell) =  &
+            !   ecosysSurfaceFlux(alk_ind_MPAS,iCell) + iceFluxDIC(iCell)
+            !ecosysSurfaceFlux(dic_alt_co2_ind_MPAS,iCell) =  &
+            !   ecosysSurfaceFlux(dic_alt_co2_ind_MPAS,iCell) + iceFluxDIC(iCell)
+            !ecosysSurfaceFlux(doc_ind_MPAS,iCell) =  &
+            !   ecosysSurfaceFlux(doc_ind_MPAS,iCell) + iceFluxDOC(1,iCell) + iceFluxDOC(2,iCell) &
+            !   + iceFluxDOC(3,iCell)
+
+!NJ Only include docr for sediment testing
             ecosysSurfaceFlux(docr_ind_MPAS,iCell) =  &
                ecosysSurfaceFlux(docr_ind_MPAS,iCell) + iceFluxDOCr(iCell)
+
 ! this is just a placeholder
 ! NJ
 !            ecosysSurfaceFlux(donr_ind_MPAS,iCell) =  &
 !               ecosysSurfaceFlux(donr_ind_MPAS,iCell) + iceFluxDOCr(iCell)
 
-            ecosysSurfaceFlux(diatC_ind_MPAS,iCell) =  &
-               ecosysSurfaceFlux(diatC_ind_MPAS,iCell) + iceFluxPhytoC(1,iCell)
-            ecosysSurfaceFlux(spC_ind_MPAS,iCell) =  &
-               ecosysSurfaceFlux(spC_ind_MPAS,iCell) + iceFluxPhytoC(2,iCell)
+            !ecosysSurfaceFlux(diatC_ind_MPAS,iCell) =  &
+            !   ecosysSurfaceFlux(diatC_ind_MPAS,iCell) + iceFluxPhytoC(1,iCell)
+            !ecosysSurfaceFlux(spC_ind_MPAS,iCell) =  &
+            !   ecosysSurfaceFlux(spC_ind_MPAS,iCell) + iceFluxPhytoC(2,iCell)
          endif
 
 !explicitly set the rest of the fluxes to 0
