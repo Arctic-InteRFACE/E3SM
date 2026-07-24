@@ -5,7 +5,7 @@ Used by buildnml. See buildnml for documetation.
 """
 
 import os, sys, re, pwd, grp, stat, getpass
-from collections import OrderedDict
+from pathlib import Path
 
 import xml.etree.ElementTree as ET
 import xml.dom.minidom as md
@@ -14,14 +14,13 @@ import xml.dom.minidom as md
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
 
 # SCREAM imports
-from eamxx_buildnml_impl import get_valid_selectors, get_child, refine_type, \
+from eamxx_buildnml_impl import get_valid_selectors, get_child, has_child, refine_type, \
         resolve_all_inheritances, gen_atm_proc_group, check_all_values, find_node
 from atm_manip import apply_atm_procs_list_changes_from_buffer, apply_non_atm_procs_list_changes_from_buffer
 
 from utils import ensure_yaml # pylint: disable=no-name-in-module
 ensure_yaml()
 import yaml
-from yaml_utils import Bools,Ints,Floats,Strings,array_representer,array_constructor
 
 _CIMEROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..","..","..","cime")
 sys.path.append(os.path.join(_CIMEROOT, "CIME", "Tools"))
@@ -234,13 +233,7 @@ def ordered_dump(data, item, Dumper=yaml.SafeDumper, **kwds):
         return dumper.represent_mapping(
             yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
             data.items())
-    OrderedDumper.add_representer(OrderedDict, _dict_representer)
-
-    # These allow to dump arrays with a tag specifying the type
-    OrderedDumper.add_representer(Bools,    array_representer)
-    OrderedDumper.add_representer(Ints,     array_representer)
-    OrderedDumper.add_representer(Floats,   array_representer)
-    OrderedDumper.add_representer(Strings,  array_representer)
+    OrderedDumper.add_representer(dict, _dict_representer)
 
     if isinstance(item, str) and item.endswith(".yaml"):
         # Item is a filepath
@@ -250,14 +243,78 @@ def ordered_dump(data, item, Dumper=yaml.SafeDumper, **kwds):
         return yaml.dump(data, item, OrderedDumper, **kwds)
 
 ###############################################################################
+def evaluate_selector(sel_name, sel_value, ez_selectors, case, child_name):
+###############################################################################
+    # Parse and and ors into separate statements
+    and_syntax = " @@ "
+    or_syntax  = " || "
+    statements = []
+    if and_syntax in sel_value:
+        expect(or_syntax not in sel_value, "Cannot mix @@ and ||")
+        statements = sel_value.split(and_syntax)
+    elif or_syntax in sel_value:
+        statements = sel_value.split(or_syntax)
+    else:
+        statements = [sel_value]
+
+    # Get relevant value from case
+    if sel_name in ez_selectors:
+        ez_env, ez_regex = ez_selectors[sel_name]
+        case_val = case.get_value(ez_env)
+        expect(case_val is not None,
+              "Bad easy selector '{}' definition. Relies on unknown case value '{}'".format(sel_name, ez_env))
+
+        ez_regex_re = re.compile(ez_regex)
+        m = ez_regex_re.match(case_val)
+        if m:
+            groups = m.groups()
+            expect(len(groups) == 1,
+                    "Selector '{}' has invalid custom regex '{}' which does not capture exactly 1 group".format(sel_name, ez_regex))
+            val = groups[0]
+        else:
+            # If the regex doesn't even match the case val, always fail the selector
+            return False
+
+    else:
+        val = case.get_value(sel_name)
+        expect(val is not None,
+               "Bad selector '{0}' for child '{1}'. '{0}' is not a valid case value or easy selector".format(sel_name, child_name))
+
+    # Check value for matches with statements
+    result = False if or_syntax in sel_value else True
+    for statement in statements:
+        is_negation = statement.startswith("!")
+        if is_negation:
+            statement = statement.lstrip("!")
+
+        val_re = re.compile(statement)
+
+        found_match   = val_re.match(val) is not None # check if regex yielded a match
+        desired_match = not is_negation # whether we want to match regex or not
+        curr_result   = found_match == desired_match # check if the match was desired or not
+
+        if and_syntax in sel_value:
+            result &= curr_result
+        elif or_syntax in sel_value:
+            result |= curr_result
+        else:
+            result = curr_result
+
+    return result
+
+###############################################################################
 def evaluate_selectors(element, case, ez_selectors):
 ###############################################################################
     """
     Evaluate and remove selectors from the unprocessed XML nml file in the repo.
 
-    Elements with selectors are removed. If the selector evaulates to True, then
-    the corresponding element text becomes the new text value of the original
-    (no-selectors, AKA default) element.
+    Elements without selectors (the default element) are kept. If a selector
+    evaluates to True, the matching element becomes the new selected element
+    and the previously selected element is removed. Non-selector metadata
+    attributes (e.g. type, constraints, doc) are copied from the previously
+    selected element to the newly selected one, so that metadata defined on
+    the default element is automatically inherited by all selector-specific
+    variants.
 
     The metadata attributes are kept, to allow checks during calls to atmchange
 
@@ -283,6 +340,24 @@ def evaluate_selectors(element, case, ez_selectors):
     ...   <var3 foo="ON">foo_on</var3>
     ...   <var4>bar_off</var4>
     ...   <var4 bar="ON">bar_on</var4>
+    ...   <var5>regex_wrong</var5>
+    ...   <var5 SCREAM_CMAKE_OPTIONS=".*BAR=OFF">regex_right</var5>
+    ...   <var6>and_right</var6>
+    ...   <var6 SCREAM_CMAKE_OPTIONS=".*BAR=OFF @@ .*64">and_wrong</var6>
+    ...   <var6a>and_wrong</var6a>
+    ...   <var6a SCREAM_CMAKE_OPTIONS=".*BAR=OFF @@ .*128">and_right</var6a>
+    ...   <var6b>or_right</var6b>
+    ...   <var6b SCREAM_CMAKE_OPTIONS=".*BAR=ON || .*64">or_wrong</var6b>
+    ...   <var6c>and_wrong</var6c>
+    ...   <var6c SCREAM_CMAKE_OPTIONS=".*BAR=OFF || .*64">or_right</var6c>
+    ...   <var7>negation_right</var7>
+    ...   <var7 grid="!ne4ne4">negation_wrong</var7>
+    ...   <var8>negation_wrong</var8>
+    ...   <var8 grid="!pg2">negation_right</var8>
+    ...   <var9>negation_right</var9>
+    ...   <var9 grid="!.*ne4">negation_wrong</var9>
+    ...   <var10>negation_wrong</var10>
+    ...   <var10 grid="!.*pg2">negation_right</var10>
     ... </namelist_defaults>
     ... '''
     >>> import xml.etree.ElementTree as ET
@@ -297,6 +372,39 @@ def evaluate_selectors(element, case, ez_selectors):
     >>> get_child(good,'var3').text=="foo_on"
     True
     >>> get_child(good,'var4').text=="bar_off"
+    True
+    >>> get_child(good,'var5').text=="regex_right"
+    True
+    >>> get_child(good,'var6').text=="and_right"
+    True
+    >>> get_child(good,'var6a').text=="and_right"
+    True
+    >>> get_child(good,'var6b').text=="or_right"
+    True
+    >>> get_child(good,'var6c').text=="or_right"
+    True
+    >>> get_child(good,'var7').text=="negation_right"
+    True
+    >>> get_child(good,'var8').text=="negation_right"
+    True
+    >>> get_child(good,'var9').text=="negation_right"
+    True
+    >>> get_child(good,'var10').text=="negation_right"
+    True
+    >>> ############## METADATA INHERITANCE #####################
+    >>> xml_inherit = '''
+    ... <namelist_defaults>
+    ...   <ivar constraints="gt 0" doc="an integer">default</ivar>
+    ...   <ivar grid="ne4ne4">selected</ivar>
+    ... </namelist_defaults>
+    ... '''
+    >>> inherit = ET.fromstring(xml_inherit)
+    >>> evaluate_selectors(inherit,case,selectors_good)
+    >>> get_child(inherit,'ivar').text=="selected"
+    True
+    >>> get_child(inherit,'ivar').attrib.get('constraints')=='gt 0'
+    True
+    >>> get_child(inherit,'ivar').attrib.get('doc')=='an integer'
     True
     >>> ############## BAD SELECTOR DEFINITION #####################
     >>> xml_sel_bad1 = '''
@@ -393,42 +501,18 @@ def evaluate_selectors(element, case, ez_selectors):
             if selectors:
                 all_match = True
                 had_case_selectors = False
-                for k, v in selectors.items():
+                for sel_name, sel_value in selectors.items():
                     # Metadata attributes are used only when it's time to generate the input files
-                    if k in METADATA_ATTRIBS:
-                        if k=="type" and child_name in selected_child.keys():
+                    if sel_name in METADATA_ATTRIBS:
+                        if sel_name=="type" and child_name in selected_child.keys():
                             if "type" in selected_child[child_name].attrib:
-                                expect (v==selected_child[child_name].attrib["type"],
+                                expect (sel_value==selected_child[child_name].attrib["type"],
                                         f"The 'type' attribute of {child_name} is not consistent across different selectors")
                         continue
 
                     had_case_selectors = True
-                    val_re = re.compile(v)
-
-                    if k in ez_selectors:
-                        ez_env, ez_regex = ez_selectors[k]
-                        case_val = case.get_value(ez_env)
-                        expect(case_val is not None,
-                              "Bad easy selector '{}' definition. Relies on unknown case value '{}'".format(k, ez_env))
-
-                        ez_regex_re = re.compile(ez_regex)
-                        m = ez_regex_re.match(case_val)
-                        if m:
-                            groups = m.groups()
-                            expect(len(groups) == 1,
-                                    "Selector '{}' has invalid custom regex '{}' which does not capture exactly 1 group".format(k, ez_regex))
-                            val = groups[0]
-                        else:
-                            # If the regex doesn't even match the case val, then we consider
-                            # string below should ensure the selector will never match.
-                            val = None
-
-                    else:
-                        val = case.get_value(k)
-                        expect(val is not None,
-                               "Bad selector '{0}' for child '{1}'. '{0}' is not a valid case value or easy selector".format(k, child_name))
-
-                    if val is None or val_re.match(val) is None:
+                    selectors_matched = evaluate_selector(sel_name, sel_value, ez_selectors, case, child_name)
+                    if not selectors_matched:
                         all_match = False
                         children_to_remove.append(child)
                         break
@@ -436,22 +520,36 @@ def evaluate_selectors(element, case, ez_selectors):
                 if all_match:
                     if child_name in selected_child.keys():
                         orig_child = selected_child[child_name]
+                        # Compute new_text before modifying child's attributes below.
+                        # We replace orig_child with child (rather than updating orig_child
+                        # in-place) so that the surviving element retains the selector
+                        # attributes of the matching variant, e.g. for diagnostics.
                         if append=="base":
-                            orig_child.text = child_base_value[child_name] + "," + child.text
+                            expect(child_name in child_base_value,
+                                   f"'append=base' used for '{child_name}' but no default "
+                                   f"(base) element was defined. "
+                                   f"Selector element attributes: {dict(child.attrib)}")
+                            new_text = child_base_value[child_name] + "," + child.text
                         elif append=="last":
-                            orig_child.text = orig_child.text + "," + child.text
+                            new_text = orig_child.text + "," + child.text
                         else:
-                            orig_child.text = child.text
-                        children_to_remove.append(child)
+                            new_text = child.text
+                        # Copy non-selector metadata from the previously selected element
+                        # to the newly selected one (if not already set on the new element).
+                        # This allows metadata (e.g. constraints, doc) to be defined only
+                        # on the default element and inherited by all selector-specific variants.
+                        for attr in METADATA_ATTRIBS:
+                            if attr in orig_child.attrib and attr not in child.attrib:
+                                child.attrib[attr] = orig_child.attrib[attr]
+                        child.text = new_text
+                        children_to_remove.append(orig_child)
+                        selected_child[child_name] = child
 
                     else:
                         # If all selectors were the METADATA_ATTRIB ones, then this is the "base" value
                         if not had_case_selectors:
                             child_base_value[child_name] = child.text
                         selected_child[child_name] = child
-                        # Make a copy of selectors.keys(), since selectors=child.attrib,
-                        # and we might delete an entry, causing the error
-                        #    RuntimeError: dictionary changed size during iteration
 
             else:
                 expect(child_name not in selected_child,
@@ -505,7 +603,6 @@ def _create_raw_xml_file_impl(case, xml, filepath=None):
     ...     <selectors/>
     ...     <generated_files/>
     ...     <atmosphere_processes_defaults>
-    ...         <atm_procs_list type="array(string)">P1,P2</atm_procs_list>
     ...         <atm_proc_base>
     ...             <prop1>zero</prop1>
     ...         </atm_proc_base>
@@ -513,6 +610,9 @@ def _create_raw_xml_file_impl(case, xml, filepath=None):
     ...             <atm_procs_list>NONE</atm_procs_list>
     ...             <prop2>one</prop2>
     ...         </atm_proc_group>
+    ...         <eamxx inherit="atm_proc_group">
+    ...             <atm_procs_list>P1,P2</atm_procs_list>
+    ...         </eamxx>
     ...         <P1 inherit="atm_proc_base">
     ...             <prop1>two</prop1>
     ...         </P1>
@@ -524,25 +624,24 @@ def _create_raw_xml_file_impl(case, xml, filepath=None):
     >>> import xml.etree.ElementTree as ET
     >>> defaults = ET.fromstring(xml)
     >>> generated = _create_raw_xml_file_impl(case,defaults)
-    >>> d = convert_to_dict(get_child(generated,'atmosphere_processes'))
+    >>> d = convert_to_dict(get_child(generated,'eamxx'))
     >>> import pprint
     >>> pp = pprint.PrettyPrinter(indent=4)
     >>> pp.pprint(d)
-    OrderedDict([   ('atm_procs_list', 'P1,P2'),
-                    ('prop2', 'one'),
-                    ('prop1', 'zero'),
-                    ('P1', OrderedDict([('prop1', 'two')])),
-                    ('P2', OrderedDict([('prop1', 'zero')]))])
+    {   'P1': {'prop1': 'two'},
+        'P2': {'prop1': 'zero'},
+        'atm_procs_list': 'P1,P2',
+        'prop1': 'zero',
+        'prop2': 'one'}
     >>> ############## INHERIT+CHILD SELECTOR #####################
     >>> case = MockCase({'ATM_GRID':'ne4ne4'})
     >>> xml = '''
     ... <namelist_defaults>
     ...     <selectors>
-    ...       <selector name="grid" case_env="ATM_GRID"/>
+    ...         <selector name="grid" case_env="ATM_GRID"/>
     ...     </selectors>
     ...     <generated_files/>
     ...     <atmosphere_processes_defaults>
-    ...         <atm_procs_list type="array(string)">P1,P2</atm_procs_list>
     ...         <atm_proc_base>
     ...             <prop1>zero</prop1>
     ...         </atm_proc_base>
@@ -550,6 +649,9 @@ def _create_raw_xml_file_impl(case, xml, filepath=None):
     ...             <atm_procs_list>NONE</atm_procs_list>
     ...             <prop2>one</prop2>
     ...         </atm_proc_group>
+    ...         <eamxx inherit="atm_proc_group">
+    ...             <atm_procs_list>P1,P2</atm_procs_list>
+    ...         </eamxx>
     ...         <P1 inherit="atm_proc_base">
     ...             <prop1>two</prop1>
     ...             <prop1 grid='ne4ne4'>two_selected</prop1>
@@ -562,15 +664,15 @@ def _create_raw_xml_file_impl(case, xml, filepath=None):
     >>> import xml.etree.ElementTree as ET
     >>> defaults = ET.fromstring(xml)
     >>> generated = _create_raw_xml_file_impl(case,defaults)
-    >>> d = convert_to_dict(get_child(generated,'atmosphere_processes'))
+    >>> d = convert_to_dict(get_child(generated,'eamxx'))
     >>> import pprint
     >>> pp = pprint.PrettyPrinter(indent=4)
     >>> pp.pprint(d)
-    OrderedDict([   ('atm_procs_list', 'P1,P2'),
-                    ('prop2', 'one'),
-                    ('prop1', 'zero'),
-                    ('P1', OrderedDict([('prop1', 'two_selected')])),
-                    ('P2', OrderedDict([('prop1', 'zero')]))])
+    {   'P1': {'prop1': 'two_selected'},
+        'P2': {'prop1': 'zero'},
+        'atm_procs_list': 'P1,P2',
+        'prop1': 'zero',
+        'prop2': 'one'}
     >>> ############## INHERIT+PARENT SELECTOR #####################
     >>> case = MockCase({'ATM_GRID':'ne4ne4'})
     >>> xml = '''
@@ -580,12 +682,14 @@ def _create_raw_xml_file_impl(case, xml, filepath=None):
     ...     </selectors>
     ...     <generated_files/>
     ...     <atmosphere_processes_defaults>
-    ...       <atm_procs_list type="array(string)">P1,P2</atm_procs_list>
     ...       <atm_proc_base>
     ...         <number_of_subcycles constraints='gt 0'>1</number_of_subcycles>
     ...         <enable_precondition_checks type='logical'>true</enable_precondition_checks>
     ...         <enable_postcondition_checks type='logical'>true</enable_postcondition_checks>
     ...       </atm_proc_base>
+    ...       <eamxx inherit="atm_proc_group">
+    ...         <atm_procs_list>P1,P2</atm_procs_list>
+    ...       </eamxx>
     ...       <physics_proc_base inherit='atm_proc_base'>
     ...         <Grid>physics_gll</Grid>
     ...         <Grid grid='ne4ne4'>physics_pg2</Grid>
@@ -606,27 +710,24 @@ def _create_raw_xml_file_impl(case, xml, filepath=None):
     >>> import xml.etree.ElementTree as ET
     >>> defaults = ET.fromstring(xml)
     >>> generated = _create_raw_xml_file_impl(case,defaults)
-    >>> d = convert_to_dict(get_child(generated,'atmosphere_processes'))
+    >>> d = convert_to_dict(get_child(generated,'eamxx'))
     >>> import pprint
     >>> pp = pprint.PrettyPrinter(indent=4)
     >>> pp.pprint(d)
-    OrderedDict([   ('atm_procs_list', 'P1,P2'),
-                    ('prop2', 'one'),
-                    ('number_of_subcycles', 1),
-                    ('enable_precondition_checks', True),
-                    ('enable_postcondition_checks', True),
-                    (   'P1',
-                        OrderedDict([   ('prop1', 'hi'),
-                                        ('Grid', 'physics_pg2'),
-                                        ('number_of_subcycles', 1),
-                                        ('enable_precondition_checks', True),
-                                        ('enable_postcondition_checks', True)])),
-                    (   'P2',
-                        OrderedDict([   ('prop1', 'there'),
-                                        ('number_of_subcycles', 1),
-                                        ('enable_precondition_checks', True),
-                                        ('enable_postcondition_checks', True)]))])
-
+    {   'P1': {   'Grid': 'physics_pg2',
+                  'enable_postcondition_checks': True,
+                  'enable_precondition_checks': True,
+                  'number_of_subcycles': 1,
+                  'prop1': 'hi'},
+        'P2': {   'enable_postcondition_checks': True,
+                  'enable_precondition_checks': True,
+                  'number_of_subcycles': 1,
+                  'prop1': 'there'},
+        'atm_procs_list': 'P1,P2',
+        'enable_postcondition_checks': True,
+        'enable_precondition_checks': True,
+        'number_of_subcycles': 1,
+        'prop2': 'one'}
     """
 
     # 0. Remove internal sections, that are not to appear in the
@@ -635,34 +736,43 @@ def _create_raw_xml_file_impl(case, xml, filepath=None):
     get_child(xml,"generated_files",remove=True)
     selectors = get_valid_selectors(xml)
 
-    # 1. Evaluate all selectors
     try:
+        # In the WHOLE xml, resolve inheritance, evaluate selectors, and expand CIME vars
         evaluate_selectors(xml, case, selectors)
-
-        # 2. Apply all changes in the SCREAM_ATMCHANGE_BUFFER that may alter
-        #    which atm processes are used
-        apply_atm_procs_list_changes_from_buffer (case,xml)
-
-        # 3. Resolve all inheritances
         resolve_all_inheritances(xml)
-
-        # 4. Expand any CIME var that appears inside XML nodes text
         expand_cime_vars(xml,case)
 
-        # 5. Grab the atmosphere_processes macro list, with all the defaults
+        # Generate default atm process list for this COMPSET (i.e., NO atmchanges considered yet)
         atm_procs_defaults = get_child(xml,"atmosphere_processes_defaults",remove=True)
+        eamxx_procs_list = get_child(get_child(atm_procs_defaults,"eamxx"),"atm_procs_list")
+        eamxx_group = gen_atm_proc_group(eamxx_procs_list.text, atm_procs_defaults)
+        eamxx_group.tag = "eamxx"
 
-        # 6. Get atm procs list
-        atm_procs_list = get_child(atm_procs_defaults,"atm_procs_list",remove=True)
+        # Apply atm changes that modify the list of processes
+        any_change = apply_atm_procs_list_changes_from_buffer (case,eamxx_group)
 
-        # 7. Form the nested list of atm procs needed, append to atmosphere_driver section
-        atm_procs = gen_atm_proc_group(atm_procs_list.text, atm_procs_defaults)
-        atm_procs.tag = "atmosphere_processes"
-        xml.append(atm_procs)
+        if any_change:
+            # Re-generate the process group. To avoid regenerating the same atm proc group,
+            # we MUST replace matching nodes in atm_procs_defaults with what is in the
+            # current atm_procs tree (as some atm procs lists have changed)
+            for default in atm_procs_defaults:
+                actual = find_node(eamxx_group,default.tag)
+                if actual is not None and has_child(actual,'atm_procs_list'):
+                    # Update the atm_procs_list of the default with the one from actual
+                    default_apl = get_child(default,'atm_procs_list')
+                    actual_apl = get_child(actual,'atm_procs_list')
+                    default_apl.text = actual_apl.text
 
-        # 8. Apply all changes in the SCREAM_ATMCHANGE_BUFFER that do not alter
-        #    which atm processes are used
+            eamxx_procs_list = get_child(eamxx_group,"atm_procs_list")
+            eamxx_group = gen_atm_proc_group(eamxx_procs_list.text, atm_procs_defaults)
+            eamxx_group.tag = "eamxx"
+
+        # Add atm procs node to xml
+        xml.append(eamxx_group)
+
+        # Apply remaining atm changes
         apply_non_atm_procs_list_changes_from_buffer (case,xml)
+
     except BaseException as e:
         if filepath is not None:
             dbg_xml_path = filepath.replace(".xml", ".dbg.xml")
@@ -726,12 +836,9 @@ def convert_to_dict(element):
     >>> root = ET.fromstring(xml)
     >>> d = convert_to_dict(root)
     >>> pp.pprint(d)
-    OrderedDict([   ('my int', 1),
-                    (   'my list',
-                        OrderedDict([   ('my_ints', [2, 3]),
-                                        ('my_strings', ['two', 'three'])]))])
+    {'my int': 1, 'my list': {'my_ints': [2, 3], 'my_strings': ['two', 'three']}}
     """
-    result = OrderedDict()
+    result = {}
     for child in element:
         child_name = child.tag.replace("__", " ")
 
@@ -916,7 +1023,7 @@ def get_file_parameters(caseroot):
         result.extend(refine_type(item.text, force_type="array(file)"))
 
     # Remove duplicates. Not sure if an error would be warranted if dupes exist
-    return list(OrderedDict.fromkeys(result))
+    return list(dict.fromkeys(result))
 
 ###############################################################################
 def create_input_data_list_file(case,caseroot):
@@ -926,13 +1033,6 @@ def create_input_data_list_file(case,caseroot):
     what to download.
     """
     files_to_download = get_file_parameters(caseroot)
-
-    # Add array parsing knowledge to yaml loader
-    loader = yaml.SafeLoader
-    loader.add_constructor("!bools",array_constructor)
-    loader.add_constructor("!ints",array_constructor)
-    loader.add_constructor("!floats",array_constructor)
-    loader.add_constructor("!strings",array_constructor)
 
     # Grab all the output yaml files, open them, and check if horiz_remap_file or vertical_remap_file is used
     rundir   = case.get_value("RUNDIR")
@@ -951,7 +1051,7 @@ def create_input_data_list_file(case,caseroot):
                 dst_yaml = os.path.expanduser(os.path.join(rundir,'data',os.path.basename(src_yaml)))
 
                 # Load file, and look for the remap file entries
-                content = yaml.load(open(dst_yaml,"r"),Loader=loader)
+                content = yaml.load(open(dst_yaml,"r"),Loader=yaml.SafeLoader)
                 if 'horiz_remap_file' in content.keys():
                     files_to_download += [content['horiz_remap_file']]
                 if 'vertical_remap_file' in content.keys():
@@ -1013,18 +1113,12 @@ def do_cime_vars_on_yaml_output_files(case, caseroot):
     out_files_xml = get_child(scorpio,"output_yaml_files",must_exist=False)
     out_files = out_files_xml.text.split(",") if (out_files_xml is not None and out_files_xml.text is not None) else []
 
-    # Add array parsing knowledge to yaml loader
-    loader = yaml.SafeLoader
-    loader.add_constructor("!bools",array_constructor)
-    loader.add_constructor("!ints",array_constructor)
-    loader.add_constructor("!floats",array_constructor)
-    loader.add_constructor("!strings",array_constructor)
-
     # We will also change the 'output_yaml_files' entry in scream_input.yaml,
     # to point to the copied files in $rundir/data
     output_yaml_files = []
+    file_signatures = []
     scream_input_file = os.path.join(rundir,'data','scream_input.yaml')
-    scream_input = yaml.load(open(scream_input_file,"r"),Loader=loader)
+    scream_input = yaml.load(open(scream_input_file,"r"),Loader=yaml.SafeLoader)
 
     # Determine the physics grid type for use in CIME-var substitution.
     pgt = 'gll'
@@ -1044,7 +1138,7 @@ def do_cime_vars_on_yaml_output_files(case, caseroot):
             safe_copy(src_yaml,dst_yaml)
 
         # Now load dst file, and process any CIME var present (if any)
-        content = yaml.load(open(dst_yaml,"r"),Loader=loader)
+        content = yaml.load(open(dst_yaml,"r"),Loader=yaml.SafeLoader)
         do_cime_vars(content,case,refine=True,
                      extra={'PHYSICS_GRID_TYPE': pgt})
 
@@ -1078,6 +1172,26 @@ def do_cime_vars_on_yaml_output_files(case, caseroot):
                    f"   frequency_units: {units}\n"
                    f"   ATM_NCPL: {case.get_value('ATM_NCPL')}\n"
                    f" This yields dt_atm={dt_atm} > dt_output={dt_out}. Please, adjust 'frequency' and/or 'frequency_units'\n")
+        
+        # Check for duplicate output file signatures
+        prefix = content['filename_prefix']
+        avg_type = content['averaging_type'].upper()
+        freq = content['output_control']['frequency']
+        units = content['output_control']['frequency_units']
+        signature = (prefix, avg_type, freq, units)
+        for prev_fn, prev_sig in file_signatures:
+            expect(signature != prev_sig,
+                f"Duplicate output file configuration detected!\n"
+                f"  File 1: {prev_fn}\n"
+                f"  File 2: {fn}\n"
+                f"  Both would generate files with:\n"
+                f"    - averaging_type: {avg_type}\n"
+                f"    - frequency: {freq}\n"
+                f"    - frequency_units: {units}\n"
+                f"    - filename_prefix: {prefix}\n"
+                f"  This would cause both outputs to write to the same NetCDF file.\n"
+                f"  Please modify one of the YAML files to use a different prefix or output frequency.")            
+        file_signatures.append((fn, signature))
 
         ordered_dump(content, open(dst_yaml, "w"))
 
@@ -1095,3 +1209,36 @@ def do_cime_vars_on_yaml_output_files(case, caseroot):
 ################################################################
 """)
         ordered_dump(scream_input, fd)
+
+###############################################################################
+def archive_case_docs(caseroot):
+###############################################################################
+    # Copy ALL eamxx input yaml/nml files to CaseDocs, for provenance
+    with SharedArea():
+        # We for sure have scream_input.yaml and namelist.nl
+        files = ['scream_input.yaml', 'namelist.nl']
+
+        caseroot = Path(caseroot)
+
+        # Get the XML configs, and find all output yaml files
+        eamxx_xml_file = caseroot / "namelist_scream.xml"
+
+        with open(eamxx_xml_file, "r") as fd:
+            eamxx_xml = ET.parse(fd).getroot()
+
+        scorpio = get_child(eamxx_xml,'scorpio')
+        out_files_xml = get_child(scorpio,"output_yaml_files",must_exist=False)
+        out_files = out_files_xml.text.split(",") if (out_files_xml is not None and out_files_xml.text is not None) else []
+
+        for fn in out_files:
+            # Get full name
+            src_yaml = Path(fn.strip())
+            files.append(src_yaml.name)
+
+        casedocs = caseroot / 'CaseDocs'
+        if casedocs.exists():
+            for f in files:
+                src = caseroot / 'run/data' / f
+                if src.exists():
+                    dst = caseroot / 'CaseDocs' / f
+                    safe_copy(src,dst)

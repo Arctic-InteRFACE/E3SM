@@ -1,100 +1,772 @@
 #ifndef GW_FUNCTIONS_HPP
 #define GW_FUNCTIONS_HPP
 
-#include "physics/share/physics_constants.hpp"
+#include "share/physics/physics_constants.hpp"
 
-#include "share/eamxx_types.hpp"
+#include "share/core/eamxx_types.hpp"
 
-#include "ekat/ekat_pack_kokkos.hpp"
-#include "ekat/ekat_workspace.hpp"
-#include "ekat/ekat_parameter_list.hpp"
+#include <ekat_pack_kokkos.hpp>
+#include <ekat_workspace.hpp>
+#include <ekat_parameter_list.hpp>
+
+#include <array>
+#include <algorithm>
 
 namespace scream {
 namespace gw {
 
 /*
- * Functions is a stateless struct used to encapsulate a
- * number of functions for gravity wave drag. We use the ETI pattern for
- * these functions.
+ * Functions is a stateless struct used to encapsulate a number of functions
+ * for gravity wave drag. We use the ETI pattern for these functions.
  */
 
 template <typename ScalarT, typename DeviceT>
 struct Functions
 {
-  //
-  // ---------- GW constants ---------
-  //
-  struct GWC {
-  };
-
-  //
-  // ------- Types --------
-  //
+  // -----------------------------------------------------------------------------------------------
+  // Types
 
   using Scalar = ScalarT;
   using Device = DeviceT;
 
-  template <typename S>
-  using BigPack = ekat::Pack<S,SCREAM_PACK_SIZE>;
-  template <typename S>
-  using SmallPack = ekat::Pack<S,SCREAM_SMALL_PACK_SIZE>;
-
-  using IntSmallPack = SmallPack<Int>;
-  using Pack = BigPack<Scalar>;
-  using Spack = SmallPack<Scalar>;
-
-  using Mask = ekat::Mask<BigPack<Scalar>::n>;
-  using Smask = ekat::Mask<SmallPack<Scalar>::n>;
+  using Pack    = ekat::Pack<Scalar,SCREAM_PACK_SIZE>;
+  using IntPack = ekat::Pack<Int,SCREAM_PACK_SIZE>;
 
   using KT = KokkosTypes<Device>;
 
   using C = scream::physics::Constants<Scalar>;
 
-  template <typename S>
-  using view_1d = typename KT::template view_1d<S>;
-  template <typename S>
-  using view_2d = typename KT::template view_2d<S>;
+  template <typename S> using view_1d = typename KT::template view_1d<S>;
+  template <typename S> using view_2d = typename KT::template view_2d<S>;
+  template <typename S> using view_3d = typename KT::template view_3d<S>;
 
-  template <typename S>
-  using uview_1d = typename ekat::template Unmanaged<view_1d<S> >;
-  template <typename S>
-  using uview_2d = typename ekat::template Unmanaged<view_2d<S> >;
+  template <typename S> using uview_1d = typename ekat::template Unmanaged<view_1d<S> >;
+  template <typename S> using uview_2d = typename ekat::template Unmanaged<view_2d<S> >;
+  template <typename S> using uview_3d = typename ekat::template Unmanaged<view_3d<S> >;
 
   using MemberType = typename KT::MemberType;
 
-  using WorkspaceManager = typename ekat::WorkspaceManager<Spack, Device>;
+  using WorkspaceManager = typename ekat::WorkspaceManager<Scalar, Device>;
   using Workspace        = typename WorkspaceManager::Workspace;
 
-  //
-  // --------- Functions ---------
-  //
+  // -----------------------------------------------------------------------------------------------
+  // GW constants
+  struct GWC {
+    // Index the cardinal directions
+    static inline constexpr int west = 0;
+    static inline constexpr int east = 1;
+    static inline constexpr int south = 2;
+    static inline constexpr int north = 3;
+
+    // defaults for gw_common_init()
+    static inline constexpr bool do_molec_diff_default = false; // Flag for molecular diffusion
+    static inline constexpr int  nbot_molec_default = 0;         // bottom level for molecular diffusion
+    static inline constexpr int  ktop_default = 0;               // Top level for gravity waves
+    static inline constexpr Real kwv_default = 6.28e-5;         // Effective horizontal wave number (100 km wavelength)
+
+    static inline constexpr Real rog = C::Rair.value / C::gravit.value;
+
+    static inline constexpr Real dback = 0.05;          // Background diffusivity
+    static inline constexpr Real taumin = 1.e-10;       // Min non-zero stress
+    static inline constexpr Real umcfac = 0.5;          // Max allowed change in u-c (before efficiency)
+    static inline constexpr Real ubmc2mn = 0.01;        // Min value of (u-c)**2
+
+    static constexpr Real half = 0.5;                   // to avoid promoting to 64-bit double in single prec
+    static constexpr Real n2min = 1.e-8;                // Min Brunt-Vaisalla frequency squared
+    static constexpr Real sec_per_day = 86400;          // seconds per day
+    static constexpr Real tau_avg_length = 100e3;       // spectrum averaging length [m]
+    static constexpr Real prndl = 0.25;                 // Inverse Prandtl number
+    static constexpr Real dca = 0.1;                    // Integration interval to get bin average
+    static constexpr Real c0 = 30;                      // reference phase speed for normalization [m/s]
+    static constexpr Real heating_altitude_max = 20e3;  // max altitude [m] to check for max heating
+    static constexpr Real orohmin = 10;                 // min surface displacement height for orographic waves
+    static constexpr Real orovmin = 2;                  // min wind speed for orographic waves
+    static constexpr Real kbotbg_pref_max = 50000.0;    // pressure limit for setting kbotbg
+    static constexpr Real kfront_pref_max = 60000.0;    // pressure limit for setting kfront
+
+    static constexpr int nalph = 66;
+
+    // Levels of pre-calculated Newtonian cooling (1/day)
+    static inline constexpr std::array<Real, nalph> alpha0 = {
+        1.896007    , 1.196965    , 0.7251356   , 0.6397463   ,
+        0.5777858   , 0.5712274   , 0.6836302   , 0.6678557   ,
+        0.5683219   , 0.4754283   , 0.3960519   , 0.332022    ,
+        0.2497581   , 0.168667    , 0.1323903   , 0.1257139   ,
+        0.1069889   , 0.09873954  , 0.09215571  , 0.09398635  ,
+        0.1061087   , 0.1294598   , 0.1544743   , 0.1648226   ,
+        0.1687332   , 0.1691513   , 0.1664987   , 0.159048    ,
+        0.149292    , 0.1351563   , 0.1174998   , 0.09913579  ,
+        0.08300615  , 0.0707      , 0.0615588   , 0.0542623   ,
+        0.0478562   , 0.04132157  , 0.03454087  , 0.02296682  ,
+        0.006723819 , 0.02164464  , 0.05756261  , 0.003844868 ,
+        0.02929285  , 0.006627098 , 0.04558291  , 0.02042176  ,
+        0.00000000  , 0.005880283 , 0.00689498  , 0.01343466  ,
+        0.00000000  , 0.03415992  , 0.02855049  , 0.01688839  ,
+        0.0272628   , 0.02772121  , 0.02135626  , 0.04863235  ,
+        0.04568304  , 0.00000000  , 0.009604108 , 0.00000000  ,
+        0.00000000  , 0.00000000
+    };
+
+    // Pressure levels that were used to calculate alpha0 (hPa)
+    static inline constexpr std::array<Real, nalph> alpha_pressure_mb = {
+        5.11075e-6  , 9.8269e-6   , 1.620185e-5 , 2.671225e-5  ,
+        4.4041e-5   , 7.261275e-5 , 1.19719e-4  , 1.9738e-4    ,
+        3.254225e-4 , 5.365325e-4 , 8.846025e-4 , 0.001458458  ,
+        0.002404575 , 0.00397825  , 0.006556825 , 0.01081382   ,
+        0.017898    , 0.02955775  , 0.04873075  , 0.07991075   ,
+        0.1282732   , 0.19812     , 0.292025    , 0.4101675    ,
+        0.55347     , 0.73048     , 0.9559475   , 1.244795     ,
+        1.61285     , 2.079325    , 2.667425    , 3.404875     ,
+        4.324575    , 5.4654      , 6.87285     , 8.599725     ,
+        10.70705    , 13.26475    , 16.35175    , 20.05675     ,
+        24.479      , 29.728      , 35.92325    , 43.19375     ,
+        51.6775     , 61.5205     , 72.8745     , 85.65715     ,
+        100.5147    , 118.2503    , 139.1154    , 163.6621     ,
+        192.5399    , 226.5132    , 266.4812    , 313.5013     ,
+        368.818     , 433.8952    , 510.4553    , 600.5242     ,
+        696.7963    , 787.7021    , 867.1607    , 929.6489     ,
+        970.5548    , 992.5561
+    };
+  };
+
+  // -----------------------------------------------------------------------------------------------
+  // Common GWD parameters
+  struct GwCommonInit {
+    GwCommonInit() : initialized(false), cref(), alpha() {}
+    bool initialized;       // flag to indicate if initialize has been called
+    
+    bool use_gw_convect    = false;
+    bool use_gw_frontal    = false;
+    bool use_gw_orographic = false;
+
+    Real gw_orographic_eff;
+
+    bool orographic_only;   // this changes the order of operations (normally false)
+    int pver;               // Number of levels in the atmosphere
+    int pgwv;               // Maximum number of waves allowed (i.e. wavenumbers are -pgwv:pgwv).
+    Real dc;                // Bin width for spectrum => huge(1._r8)
+    view_1d<Real> cref;     // Reference speeds for the spectrum
+    bool do_molec_diff;     // flag for molecular diffusion (normally false)
+    int nbot_molec;         // bottom level for molecular diffusion = huge(1)
+    bool tau_0_ubc;         // flag to enforce an upper boundary condition of tau=0 (normally false)
+    Real fcrit2;            // Critical Froude number = huge(1._r8)
+    Real kwv;               // Effective horizontal wave number = huge(1._r8)
+    Real oroko2;            // 1/2 * horizontal wavenumber (for oro)
+    int ktop;               // top interface level for wave sources = huge(1)
+    int kbotbg;             // Bot interface level for wave sources = huge(1)
+    Real effkwv;            // Effective wavenumber = huge(1._r8)
+    view_1d<Real> alpha;    // Newtonian cooling coefficients
+    Real tndmax;            // Max wind tend from stress divergence (before efficiency) = huge(1._r8)
+
+    // the do_taper flag refers to a latitude taper that was designed for lat/lon
+    // grids where points converge toward the poles. We will likely never use this
+    // but we'll keep it hard coded to false and passed to various routines just
+    // in case we revert back to using these grids in the future.
+    bool do_taper = false;
+
+  };
+
+  // -----------------------------------------------------------------------------------------------
+  // Convective GWD parameters
+  struct GwConvectInit {
+    GwConvectInit() : initialized(false), mfcc() {}
+    bool initialized;   // flag to indicate if initialize has been called
+    int maxh;           // Dimension for convective heating depth
+    int maxuh;          // Dimension for mean wind in heating
+    int k_src_wind;     // Index for level for storm/steering flow (usually 700 mb)
+    view_3d<Real> mfcc; // Table of source spectra
+
+    Real gw_convect_eff;             // Efficiency of convective GW tendencies
+    Real gw_convect_hcf;             // Convective heating rate conversion factor
+    Real gw_convect_hdepth_scale;    // Scaling factor for convective heating depth
+    Real gw_convect_hdepth_min;      // Minimum hdepth for for convective GWD spectrum lookup table [km]
+    Real gw_convect_storm_speed_min; // Minimum convective storm speed for convective GWD [m/s]
+    Real gw_convect_plev_src_wind;   // Reference pressure level for source wind for convective GWD [Pa]
+    bool use_gw_convect_old;         // Switch to enable legacy behavior
+  };
+
+  // -----------------------------------------------------------------------------------------------
+  // Frontal GWD parameters
+  struct GwFrontInit {
+    GwFrontInit() : initialized(false), fav() {}
+    bool initialized;   // Tell us if initialize has been called
+    Real taubgnd;       // Background stress source strength for frontal GW scheme
+    Real frontgfc;      // Frontogenesis function critical threshold
+    Int kfront;         // Level to check frontogenesis func to launch waves
+    view_1d<Real> fav;  // Avg of gaussian over gw spectrum bins, mult. by BG source strength (taubgnd)
+    Real gw_frontal_eff;// Efficiency of frontal GW tendencies
+  };
+
+  // -----------------------------------------------------------------------------------------------
+  // Utility Functions
+
+  // Interpolate the values of the input array along dimension 2
+  KOKKOS_INLINE_FUNCTION
+  static void midpoint_interp(
+    const MemberType& team,
+    const uview_1d<const Real>& in,
+    const uview_1d<Real>& interp)
+  {
+    if (in.size() != interp.size() + 1) {
+      Kokkos::printf("midpoint_interp(): 'in' (interface) must have exactly one more "
+                     "element than 'interp' (midpoint). Got in.size()=%d, interp.size()=%d, "
+                     "expected in.size() == interp.size() + 1.\n",
+                     (int)in.size(), (int)interp.size());
+    }
+    EKAT_KERNEL_REQUIRE(in.size() == interp.size() + 1);
+    Kokkos::parallel_for(
+      Kokkos::TeamVectorRange(team, 0, in.extent(0)-1), [&] (const int k) {
+        interp(k) = (in(k)+in(k+1)) / 2;
+    });
+  }
+
+  // Take two vector components and find the unit vector components and total magnitude
+  KOKKOS_INLINE_FUNCTION
+  static void get_unit_vector(const Real& u, const Real& v, Real& u_n, Real& v_n, Real& mag)
+  {
+    mag = sqrt(u*u + v*v);
+    if (mag > 0) {
+      u_n = u / mag;
+      v_n = v / mag;
+    }
+    else {
+      u_n = 0;
+      v_n = 0;
+    }
+  }
+
+  // Elemental 2D dot product (intrinsic dot_product is for arrays of contiguous vectors)
+  KOKKOS_INLINE_FUNCTION
+  static Real dot_2d(const Real& u1, const Real& v1, const Real& u2, const Real& v2)
+  {
+    return u1*u2 + v1*v2;
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // Init/Finalize Functions
+  static void gw_common_init(
+    // Inputs
+    const Int& pver_in,
+    const Int& pgwv_in,
+    const Real& dc_in,
+    const uview_1d<const Real>& cref_in,
+    const bool& orographic_only_in,
+    const bool& do_molec_diff_in,
+    const bool& tau_0_ubc_in,
+    const Int& nbot_molec_in,
+    const Int& ktop_in,
+    const Int& kbotbg_in,
+    const Real& fcrit2_in,
+    const Real& kwv_in,
+    const uview_1d<const Real>& alpha_in);
+
+  static void gw_common_init(
+    // Inputs
+    ekat::ParameterList& params,
+    const Int& pver_in,
+    const uview_1d<const Real>& pref_int,
+    const bool& do_molec_diff_in,
+    const Int& nbot_molec_in,
+    const Int& ktop_in,
+    const Real& kwv_in);
+
+  static void gw_convect_init(
+    // Inputs
+    const Real& plev_src_wind,
+    const uview_3d<const Real>& mfcc_in);
+
+  static void gw_convect_init(
+    // Inputs
+    ekat::ParameterList& params,
+    const uview_3d<const Real>& mfcc_in);
+
+  static void gw_front_init(
+    // Inputs
+    const Real& taubgnd,
+    const Real& frontgfc_in,
+    const Int& kfront_in);
+
+  static void gw_front_init(
+    // Inputs
+    ekat::ParameterList& params,
+    const uview_1d<const Real>& pref_int);
+
+  static void gw_finalize()
+  {
+    s_common_init.cref  = decltype(s_common_init.cref)();
+    s_common_init.alpha = decltype(s_common_init.alpha)();
+    s_convect_init.mfcc = decltype(s_convect_init.mfcc)();
+    s_front_init.fav    = decltype(s_front_init.fav)();
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // Functions
 
   KOKKOS_FUNCTION
   static void gwd_compute_tendencies_from_stress_divergence(
     // Inputs
-    const Int& ncol,
+    const MemberType& team,
+    const Workspace& workspace,
+    const GwCommonInit& init,
     const Int& pver,
     const Int& pgwv,
-    const Int& ngwv,
     const bool& do_taper,
-    const Spack& dt,
-    const Spack& effgw,
-    const uview_1d<const Int>& tend_level,
-    const uview_1d<const Spack>& lat,
-    const uview_1d<const Spack>& dpm,
-    const uview_1d<const Spack>& rdpm,
-    const uview_1d<const Spack>& c,
-    const uview_1d<const Spack>& ubm,
-    const uview_1d<const Spack>& t,
-    const uview_1d<const Spack>& nm,
-    const uview_1d<const Spack>& xv,
-    const uview_1d<const Spack>& yv,
+    const Real& dt,
+    const Real& effgw,
+    const Int& tend_level,
+    const Int& max_level,
+    const Real& lat,
+    const uview_1d<const Real>& dpm,
+    const uview_1d<const Real>& rdpm,
+    const uview_1d<const Real>& c,
+    const uview_1d<const Real>& ubm,
+    const uview_1d<const Real>& t,
+    const uview_1d<const Real>& nm,
+    const Real& xv,
+    const Real& yv,
     // Inputs/Outputs
-    const uview_1d<Spack>& tau,
+    const uview_2d<Real>& tau,
     // Outputs
-    const uview_1d<Spack>& gwut,
-    const uview_1d<Spack>& utgw,
-    const uview_1d<Spack>& vtgw);
+    const uview_2d<Real>& gwut,
+    const uview_1d<Real>& utgw,
+    const uview_1d<Real>& vtgw);
+
+  /*
+   * Compute profiles of background state quantities for the multiple
+   * gravity wave drag parameterization.
+   *
+   * The parameterization is assumed to operate only where water vapor
+   * concentrations are negligible in determining the density.
+   */
+  KOKKOS_FUNCTION
+  static void gw_prof(
+    // Inputs
+    const MemberType& team,
+    const Int& pver,
+    const Real& cpair,
+    const uview_1d<const Real>& t,
+    const uview_1d<const Real>& pmid,
+    const uview_1d<const Real>& pint,
+    // Outputs
+    const uview_1d<Real>& rhoi,
+    const uview_1d<Real>& ti,
+    const uview_1d<Real>& nm,
+    const uview_1d<Real>& ni);
+
+  KOKKOS_FUNCTION
+  static void momentum_energy_conservation(
+    // Inputs
+    const MemberType& team,
+    const Int& pver,
+    const Int& tend_level,
+    const Real& dt,
+    const uview_2d<const Real>& taucd,
+    const uview_1d<const Real>& pint,
+    const uview_1d<const Real>& pdel,
+    const uview_1d<const Real>& u,
+    const uview_1d<const Real>& v,
+    // Inputs/Outputs
+    const uview_1d<Real>& dudt,
+    const uview_1d<Real>& dvdt,
+    const uview_1d<Real>& dsdt,
+    const uview_1d<Real>& utgw,
+    const uview_1d<Real>& vtgw,
+    const uview_1d<Real>& ttgw);
+
+  KOKKOS_FUNCTION
+  static void gwd_compute_stress_profiles_and_diffusivities(
+    // Inputs
+    const MemberType& team,
+    const Workspace& workspace,
+    const GwCommonInit& init,
+    const Int& pver,
+    const Int& pgwv,
+    const Int& src_level,
+    const uview_1d<const Real>& ubi,
+    const uview_1d<const Real>& c,
+    const uview_1d<const Real>& rhoi,
+    const uview_1d<const Real>& ni,
+    const uview_1d<const Real>& kvtt,
+    const uview_1d<const Real>& t,
+    const uview_1d<const Real>& ti,
+    const uview_1d<const Real>& piln,
+    // Inputs/Outputs
+    const uview_2d<Real>& tau);
+
+  // Serial version of gwd_compute_stress_profiles_and_diffusivities that
+  // follows the original Fortran loop structure exactly (serial outer k-loop,
+  // parallel inner l-loops). Avoids the two-pass precomputation used by the
+  // parallel version, which can diverge from the original algorithm.
+  KOKKOS_FUNCTION
+  static void gwd_compute_stress_profiles_and_diffusivities_serial(
+    // Inputs
+    const MemberType& team,
+    const Workspace& workspace,
+    const GwCommonInit& init,
+    const Int& pver,
+    const Int& pgwv,
+    const Int& src_level,
+    const uview_1d<const Real>& ubi,
+    const uview_1d<const Real>& c,
+    const uview_1d<const Real>& rhoi,
+    const uview_1d<const Real>& ni,
+    const uview_1d<const Real>& kvtt,
+    const uview_1d<const Real>& t,
+    const uview_1d<const Real>& ti,
+    const uview_1d<const Real>& piln,
+    // Inputs/Outputs
+    const uview_2d<Real>& tau);
+
+  KOKKOS_FUNCTION
+  static void gwd_project_tau(
+    // Inputs
+    const MemberType& team,
+    const Workspace& workspace,
+    const GwCommonInit& init,
+    const Int& pver,
+    const Int& pgwv,
+    const Int& tend_level,
+    const uview_2d<const Real>& tau,
+    const uview_1d<const Real>& ubi,
+    const uview_1d<const Real>& c,
+    const Real& xv,
+    const Real& yv,
+    // Outputs
+    const uview_2d<Real>& taucd);
+
+  KOKKOS_FUNCTION
+  static void gwd_precalc_rhoi(
+    // Inputs
+    const MemberType& team,
+    const Workspace& workspace,
+    const GwCommonInit& init,
+    const Int& pver,
+    const Int& pgwv,
+    const Real& dt,
+    const Int& tend_level,
+    const uview_1d<const Real>& pmid,
+    const uview_1d<const Real>& pint,
+    const uview_1d<const Real>& t,
+    const uview_2d<const Real>& gwut,
+    const uview_1d<const Real>& ubm,
+    const uview_1d<const Real>& nm,
+    const uview_1d<const Real>& rdpm,
+    const uview_1d<const Real>& c,
+    const uview_2d<const Real>& q,
+    const uview_1d<const Real>& dse,
+    // Outputs
+    const uview_1d<Real>& egwdffi,
+    const uview_2d<Real>& qtgw,
+    const uview_1d<Real>& dttdf,
+    const uview_1d<Real>& dttke,
+    const uview_1d<Real>& ttgw);
+
+  KOKKOS_FUNCTION
+  static void gw_drag_prof(
+    // Inputs
+    const MemberType& team,
+    const Workspace& workspace,
+    const GwCommonInit& init,
+    const Int& pver,
+    const Int& pgwv,
+    const Int& src_level,
+    const Int& max_level,
+    const Int& tend_level,
+    const bool& do_taper,
+    const Real& dt,
+    const Real& lat,
+    const uview_1d<const Real>& t,
+    const uview_1d<const Real>& ti,
+    const uview_1d<const Real>& pmid,
+    const uview_1d<const Real>& pint,
+    const uview_1d<const Real>& dpm,
+    const uview_1d<const Real>& rdpm,
+    const uview_1d<const Real>& piln,
+    const uview_1d<const Real>& rhoi,
+    const uview_1d<const Real>& nm,
+    const uview_1d<const Real>& ni,
+    const uview_1d<const Real>& ubm,
+    const uview_1d<const Real>& ubi,
+    const Real& xv,
+    const Real& yv,
+    const Real& effgw,
+    const uview_1d<const Real>& c,
+    const uview_1d<const Real>& kvtt,
+    const uview_2d<const Real>& q,
+    const uview_1d<const Real>& dse,
+    // Inputs/Outputs
+    const uview_2d<Real>& tau,
+    // Outputs
+    const uview_1d<Real>& utgw,
+    const uview_1d<Real>& vtgw,
+    const uview_1d<Real>& ttgw,
+    const uview_2d<Real>& qtgw,
+    const uview_2d<Real>& taucd,
+    const uview_1d<Real>& egwdffi,
+    const uview_2d<Real>& gwut,
+    const uview_1d<Real>& dttdf,
+    const uview_1d<Real>& dttke);
+
+  KOKKOS_FUNCTION
+  static void gw_front_project_winds(
+    // Inputs
+    const MemberType& team,
+    const Int& pver,
+    const Int& kbot,
+    const uview_1d<const Real>& u,
+    const uview_1d<const Real>& v,
+    // Outputs
+    Real& xv,
+    Real& yv,
+    const uview_1d<Real>& ubm,
+    const uview_1d<Real>& ubi);
+
+  KOKKOS_FUNCTION
+  static void gw_front_gw_sources(
+    // Inputs
+    const MemberType& team,
+    const GwFrontInit& finit,
+    const Int& pgwv,
+    const Int& pver,
+    const Int& kbot,
+    const uview_1d<const Real>& frontgf,
+    // Outputs
+    const uview_2d<Real>& tau);
+
+  KOKKOS_FUNCTION
+  static void gw_cm_src(
+    // Inputs
+    const MemberType& team,
+    const GwCommonInit& init,
+    const GwFrontInit& finit,
+    const Int& pver,
+    const Int& pgwv,
+    const Int& kbot,
+    const uview_1d<const Real>& u,
+    const uview_1d<const Real>& v,
+    const uview_1d<const Real>& frontgf,
+    // Outputs
+    Int& src_level,
+    Int& tend_level,
+    const uview_2d<Real>& tau,
+    const uview_1d<Real>& ubm,
+    const uview_1d<Real>& ubi,
+    Real& xv,
+    Real& yv,
+    const uview_1d<Real>& c);
+
+  KOKKOS_FUNCTION
+  static void gw_convect_project_winds(
+    // Inputs
+    const MemberType& team,
+    const GwConvectInit& init,
+    const Int& pver,
+    const uview_1d<const Real>& u,
+    const uview_1d<const Real>& v,
+    // Outputs
+    Real& xv,
+    Real& yv,
+    const uview_1d<Real>& ubm,
+    const uview_1d<Real>& ubi);
+
+  KOKKOS_FUNCTION
+  static void gw_heating_depth(
+    // Inputs
+    const MemberType& team,
+    const GwConvectInit& init,
+    const Int& pver,
+    const Real& maxq0_conversion_factor,
+    const Real& hdepth_scaling_factor,
+    const bool& use_gw_convect_old,
+    const uview_1d<const Real>& zm,
+    const uview_1d<const Real>& netdt,
+    // Outputs
+    Int& mini,
+    Int& maxi,
+    Real& hdepth,
+    Real& maxq0_out,
+    Real& maxq0);
+
+  KOKKOS_FUNCTION
+  static void gw_storm_speed(
+    // Inputs
+    const MemberType& team,
+    const GwCommonInit& init,
+    const GwConvectInit& cinit,
+    const Int& pver,
+    const Real& storm_speed_min,
+    const uview_1d<const Real>& ubm,
+    const Int& mini,
+    const Int& maxi,
+    // Outputs
+    Int& storm_speed,
+    Real& uh,
+    Real& umin,
+    Real& umax);
+
+  KOKKOS_FUNCTION
+  static void gw_convect_gw_sources(
+    // Inputs
+    const MemberType& team,
+    const GwCommonInit& init,
+    const GwConvectInit& cinit,
+    const Int& pgwv,
+    const Int& pver,
+    const Real& lat,
+    const Real& hdepth_min,
+    const Real& hdepth,
+    const Int& mini,
+    const Int& maxi,
+    const uview_1d<const Real>& netdt,
+    const Real& uh,
+    const Int& storm_speed,
+    const Real& maxq0,
+    const Real& umin,
+    const Real& umax,
+    // Outputs
+    const uview_2d<Real>& tau);
+
+  KOKKOS_FUNCTION
+  static void gw_beres_src(
+    // Inputs
+    const MemberType& team,
+    const Workspace& workspace,
+    const GwCommonInit& init,
+    const GwConvectInit& cinit,
+    const Int& pver,
+    const Int& pgwv,
+    const Real& lat,
+    const uview_1d<const Real>& u,
+    const uview_1d<const Real>& v,
+    const uview_1d<const Real>& netdt,
+    const uview_1d<const Real>& zm,
+    const Real& maxq0_conversion_factor,
+    const Real& hdepth_scaling_factor,
+    const Real& hdepth_min,
+    const Real& storm_speed_min,
+    const bool& use_gw_convect_old,
+    // Outputs
+    Int& src_level,
+    Int& tend_level,
+    const uview_2d<Real>& tau,
+    const uview_1d<Real>& ubm,
+    const uview_1d<Real>& ubi,
+    Real& xv,
+    Real& yv,
+    const uview_1d<Real>& c,
+    Real& hdepth,
+    Real& maxq0_out);
+
+  KOKKOS_FUNCTION
+  static void gw_ediff(
+    // Inputs
+    const MemberType& team,
+    const Workspace& workspace,
+    const Int& pver,
+    const Int& pgwv,
+    const Int& kbot,
+    const Int& ktop,
+    const Int& tend_level,
+    const Real& dt,
+    const uview_2d<const Real>& gwut,
+    const uview_1d<const Real>& ubm,
+    const uview_1d<const Real>& nm,
+    const uview_1d<const Real>& rho,
+    const uview_1d<const Real>& pmid,
+    const uview_1d<const Real>& rdpm,
+    const uview_1d<const Real>& c,
+    // Outputs
+    const uview_1d<Real>& egwdffi,
+    const uview_1d<Real>& decomp_ca,
+    const uview_1d<Real>& decomp_cc,
+    const uview_1d<Real>& decomp_dnom,
+    const uview_1d<Real>& decomp_ze);
+
+  KOKKOS_FUNCTION
+  static void gw_diff_tend(
+    // Inputs
+    const MemberType& team,
+    const Workspace& workspace,
+    const Int& pver,
+    const Int& kbot,
+    const Int& ktop,
+    const uview_1d<const Real>& q,
+    const Real& dt,
+    const uview_1d<const Real>& decomp_ca,
+    const uview_1d<const Real>& decomp_cc,
+    const uview_1d<const Real>& decomp_dnom,
+    const uview_1d<const Real>& decomp_ze,
+      // Outputs
+    const uview_1d<Real>& dq);
+
+  KOKKOS_FUNCTION
+  static void gw_oro_src(
+    // Inputs
+    const MemberType& team,
+    const GwCommonInit& init,
+    const Int& pver,
+    const Int& pgwv,
+    const uview_1d<const Real>& u,
+    const uview_1d<const Real>& v,
+    const uview_1d<const Real>& t,
+    const Real& sgh,
+    const uview_1d<const Real>& pmid,
+    const uview_1d<const Real>& pint,
+    const uview_1d<const Real>& dpm,
+    const uview_1d<const Real>& zm,
+    const uview_1d<const Real>& nm,
+    // Outputs
+    Int& src_level,
+    Int& tend_level,
+    const uview_2d<Real>& tau,
+    const uview_1d<Real>& ubm,
+    const uview_1d<Real>& ubi,
+    Real& xv,
+    Real& yv,
+    const uview_1d<Real>& c);
+
+  KOKKOS_FUNCTION
+  static void vd_lu_decomp(
+    // Inputs
+    const MemberType& team,
+    const Int& pver,
+    const Real& ksrf,
+    const uview_1d<const Real>& kv,
+    const uview_1d<const Real>& tmpi,
+    const uview_1d<const Real>& rpdel,
+    const Real& ztodt,
+    const Real& cc_top,
+    const Int& ntop,
+    const Int& nbot,
+    // Outputs
+    const uview_1d<Real>& decomp_ca,
+    const uview_1d<Real>& decomp_cc,
+    const uview_1d<Real>& decomp_dnom,
+    const uview_1d<Real>& decomp_ze);
+
+  KOKKOS_FUNCTION
+  static void vd_lu_solve(
+    // Inputs
+    const MemberType& team,
+    const Workspace& workspace,
+    const Int& pver,
+    const uview_1d<const Real>& decomp_ca,
+    const uview_1d<const Real>& decomp_cc,
+    const uview_1d<const Real>& decomp_dnom,
+    const uview_1d<const Real>& decomp_ze,
+    const Int& ntop,
+    const Int& nbot,
+    const Real& cd_top,
+    // Inputs/Outputs
+    const uview_1d<Real>& q);
+
+  //
+  // --------- Members ---------
+  //
+  inline static GwCommonInit s_common_init;
+  inline static GwConvectInit s_convect_init;
+  inline static GwFrontInit s_front_init;
+
 }; // struct Functions
 
 } // namespace gw
@@ -104,6 +776,28 @@ struct Functions
 // to the translation unit; otherwise, ETI is used.
 #if defined(EAMXX_ENABLE_GPU) && !defined(KOKKOS_ENABLE_CUDA_RELOCATABLE_DEVICE_CODE) \
                                 && !defined(KOKKOS_ENABLE_HIP_RELOCATABLE_DEVICE_CODE)
-# include "impl/gw_gwd_compute_tendencies_from_stress_divergence_impl.hpp"
+# include "impl/gw_compute_tendencies_from_stress_divergence_impl.hpp"
+# include "impl/gw_prof_impl.hpp"
+# include "impl/gw_momentum_energy_conservation_impl.hpp"
+# include "impl/gw_compute_stress_profiles_and_diffusivities_impl.hpp"
+# include "impl/gw_project_tau_impl.hpp"
+# include "impl/gw_precalc_rhoi_impl.hpp"
+# include "impl/gw_drag_prof_impl.hpp"
+# include "impl/gw_front_project_winds_impl.hpp"
+# include "impl/gw_front_gw_sources_impl.hpp"
+# include "impl/gw_cm_src_impl.hpp"
+# include "impl/gw_convect_project_winds_impl.hpp"
+# include "impl/gw_heating_depth_impl.hpp"
+# include "impl/gw_storm_speed_impl.hpp"
+# include "impl/gw_convect_gw_sources_impl.hpp"
+# include "impl/gw_beres_src_impl.hpp"
+# include "impl/gw_ediff_impl.hpp"
+# include "impl/gw_diff_tend_impl.hpp"
+# include "impl/gw_oro_src_impl.hpp"
+# include "impl/gw_common_init_impl.hpp"
+# include "impl/gw_vd_lu_decomp_impl.hpp"
+# include "impl/gw_vd_lu_solve_impl.hpp"
+# include "impl/gw_convect_init_impl.hpp"
+# include "impl/gw_front_init_impl.hpp"
 #endif // GPU && !KOKKOS_ENABLE_*_RELOCATABLE_DEVICE_CODE
 #endif // P3_FUNCTIONS_HPP

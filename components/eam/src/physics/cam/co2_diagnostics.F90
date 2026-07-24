@@ -87,6 +87,9 @@ contains
             ! carbon emissions and fluxes at current timestep
             state(lchnk)%c_flux_sfc(i) = 0._r8
             state(lchnk)%c_flux_air(i) = 0._r8
+            state(lchnk)%c_flux_sff(i) = 0._r8
+            state(lchnk)%c_flux_lnd(i) = 0._r8
+            state(lchnk)%c_flux_ocn(i) = 0._r8
             ! monthly accumulated carbon emissions and fluxes
             state(lchnk)%c_mflx_sfc(i) = 0._r8
             state(lchnk)%c_mflx_air(i) = 0._r8
@@ -120,6 +123,14 @@ contains
       call pbuf_add_field('tc_init',    'global', dtype_r8, (/pcols/), idx)
       call pbuf_add_field('tc_mnst',    'global', dtype_r8, (/pcols/), idx)
       call pbuf_add_field('tc_prev',    'global', dtype_r8, (/pcols/), idx)
+      
+      ! timestep accumulated carbon emissions and fluxes
+      call pbuf_add_field('c_flux_sfc', 'global', dtype_r8, (/pcols/), idx)
+      call pbuf_add_field('c_flux_air', 'global', dtype_r8, (/pcols/), idx)
+      call pbuf_add_field('c_flux_sff', 'global', dtype_r8, (/pcols/), idx)
+      call pbuf_add_field('c_flux_lnd', 'global', dtype_r8, (/pcols/), idx)
+      call pbuf_add_field('c_flux_ocn', 'global', dtype_r8, (/pcols/), idx)
+
       ! monthly accumulated carbon emissions and fluxes
       call pbuf_add_field('c_mflx_sfc', 'global', dtype_r8, (/pcols/), idx)
       call pbuf_add_field('c_mflx_air', 'global', dtype_r8, (/pcols/), idx)
@@ -254,6 +265,9 @@ contains
       ! put in state
       do i = 1, ncol
          state%c_flux_sfc(i) = sfc_flux(i)
+         state%c_flux_sff(i) = sfc_flux_fff(i)
+         state%c_flux_lnd(i) = sfc_flux_lnd(i)
+         state%c_flux_ocn(i) = sfc_flux_ocn(i)
       end do
 
       ! zero out monthly fluxes at start of each month
@@ -283,73 +297,83 @@ contains
 
 !-------------------------------------------------------------------------------
 
-   subroutine get_carbon_air_fluxes(state, pbuf, dtime)
+   subroutine get_carbon_air_fluxes(state, pbuf, dtime, pbuf_name)
       !-------------------------------------------------
-      ! Purpose: store aircraft CO2 emissions in state
+      ! Purpose: store fossil fluel (aircraft or form IAC) CO2 emissions in state
       ! Called by: tphysac
       !-------------------------------------------------
-      use physics_buffer, only: physics_buffer_desc, pbuf_get_index, pbuf_get_field
+      use physics_buffer,     only: physics_buffer_desc, pbuf_get_index, pbuf_get_field
+      use phys_control  , only: iac_present
 
       type(physics_state), intent(inout) :: state
       type(physics_buffer_desc), pointer :: pbuf(:)
       real(r8), intent(in)               :: dtime        ! physics time step
+      character(len=*), optional         :: pbuf_name
 
       ! local variables
       real(r8) :: tc(state%ncol)            ! vertical integral of total carbon
       integer ncol                          ! number of atmospheric columns
       integer i, k, m                       ! column, level, constant indices
-      integer index_ac_CO2                  ! pbuf index for aircraft emissions
-      real(r8), pointer :: ac_CO2(:,:)      ! aircraft emissions in pbuf
-      real(r8) :: air_flux(pcols)           ! aircraft carbon flux
+      integer index_fossil_CO2              ! pbuf index for fossil fuel emissions
+      real(r8), pointer :: fossil_CO2(:,:)  ! fossil fuel emissions in pbuf
+      real(r8) :: fossil_flux(pcols)        ! fossil fuel carbon flux
       !------------------------------------------------------------------------
+      !Update fluxes only if co2 transport is true and either we are reading
+      !the aircraft data or the data are provided IAC
+      if ( co2_transport() .and. (co2_readFlux_aircraft .or.  iac_present)) then
 
-      if ( .not. co2_transport() .or. .not. co2_readFlux_aircraft ) return
-
-      ! Set CO2 global index
-      do m = 1, ncnst
-         select case (trim(c_names(m)))
-         case ('CO2')
-            co2_glo_ind = c_i(m)
-         end select
-      end do
-
-      ! acquire aircraft fluxes from physics buffer
-      index_ac_CO2 = pbuf_get_index('ac_CO2')   
-      call pbuf_get_field(pbuf, index_ac_CO2, ac_CO2)
-
-      ! initialize arrays
-      ncol  = state%ncol
-      do i = 1, ncol
-         air_flux(i) = 0._r8
-      end do
-
-      ! gather aircraft fluxes
-      do k = 1, pver
-         do i = 1, ncol
-            air_flux(i) = air_flux(i) + ac_CO2(i,k)
+         ! Set CO2 global index
+         do m = 1, ncnst
+            select case (trim(c_names(m)))
+            case ('CO2')
+               co2_glo_ind = c_i(m)
+            end select
          end do
-      end do
 
-      ! put in state
-      do i = 1, ncol
-         state%c_flux_air(i) = air_flux(i)
-      end do
+         ! acquire fossil fuel fluxes from physics buffer
+         if (present(pbuf_name)) then !FIXME: do an explicit comparison with the iac pbuf name
+            ! acquire IAC fluxes from physics buffer
+            index_fossil_CO2 = pbuf_get_index(trim(pbuf_name))
+         else
+            ! acquire aircraft fluxes from physics buffer
+            index_fossil_CO2 = pbuf_get_index('ac_CO2')
+         endif
+         call pbuf_get_field(pbuf, index_fossil_CO2, fossil_CO2)
 
-      ! zero out monthly fluxes at start of each month
-      if ( is_start_curr_month() ) then
+         ! initialize arrays
+         ncol  = state%ncol
          do i = 1, ncol
-            state%c_mflx_air(i) = 0._r8
+            fossil_flux(i) = 0._r8
          end do
-      end if
 
-      if ( .not. is_first_step() ) then
+         ! gather aircraft fluxes
+         do k = 1, pver
+            do i = 1, ncol
+               fossil_flux(i) = fossil_flux(i) + fossil_CO2(i,k)
+            end do
+         end do
+
+         ! put in state
          do i = 1, ncol
-            state%c_iflx_air(i) = state%c_iflx_air(i) + (air_flux(i) * dtime)
-            state%c_mflx_air(i) = state%c_mflx_air(i) + (air_flux(i) * dtime)
+            state%c_flux_air(i) = fossil_flux(i)
          end do
-      end if
 
-   end subroutine get_carbon_air_fluxes
+         ! zero out monthly fluxes at start of each month
+         if ( is_start_curr_month() ) then
+            do i = 1, ncol
+               state%c_mflx_air(i) = 0._r8
+            end do
+         end if
+
+         if ( .not. is_first_step() ) then
+            do i = 1, ncol
+               state%c_iflx_air(i) = state%c_iflx_air(i) + (fossil_flux(i) * dtime)
+               state%c_mflx_air(i) = state%c_mflx_air(i) + (fossil_flux(i) * dtime)
+            end do
+         end if
+      endif ! co2 transport, aircraft and iac_co2
+
+       end subroutine get_carbon_air_fluxes
 
 !-------------------------------------------------------------------------------
 
@@ -370,7 +394,7 @@ contains
       integer :: ierr
       integer :: cdate, year, mon, day, sec
       integer, parameter :: c_num_var     = 4
-      integer, parameter :: f_ts_num_var  = 2
+      integer, parameter :: f_ts_num_var  = 5
       integer, parameter :: f_mon_num_var = 5
       integer, parameter :: f_run_num_var = 5
       character(len=*), parameter :: sub_name='print_global_carbon_diags: '
@@ -380,7 +404,7 @@ contains
       real(r8) :: flux_mon_glob(f_mon_num_var)
       real(r8) :: flux_run_glob(f_run_num_var)
       real(r8) :: gtc_curr, gtc_init, gtc_mnst, gtc_prev, gtc_delta
-      real(r8) :: gtc_flux_sfc, gtc_flux_air
+      real(r8) :: gtc_flux_sfc, gtc_flux_air, gtc_flux_sff, gtc_flux_lnd, gtc_flux_ocn
       real(r8) :: gtc_mflx_sfc, gtc_mflx_air, gtc_mflx_sff, gtc_mflx_lnd, gtc_mflx_ocn
       real(r8) :: gtc_iflx_sfc, gtc_iflx_air, gtc_iflx_sff, gtc_iflx_lnd, gtc_iflx_ocn
       real(r8) :: gtc_flux_tot, gtc_mflx_tot, gtc_iflx_tot
@@ -411,6 +435,9 @@ contains
             ! carbon emissions and fluxes at current time step
             flux_ts(i,lchnk,1) = state(lchnk)%c_flux_sfc(i)
             flux_ts(i,lchnk,2) = state(lchnk)%c_flux_air(i)
+            flux_ts(i,lchnk,3) = state(lchnk)%c_flux_sff(i)
+            flux_ts(i,lchnk,4) = state(lchnk)%c_flux_lnd(i)
+            flux_ts(i,lchnk,5) = state(lchnk)%c_flux_ocn(i)
             ! monthly accumulated carbon emissions and fluxes
             flux_mon(i,lchnk,1) = state(lchnk)%c_mflx_sfc(i)
             flux_mon(i,lchnk,2) = state(lchnk)%c_mflx_air(i)
@@ -461,6 +488,9 @@ contains
 
       gtc_flux_sfc = flux_ts_glob(1)
       gtc_flux_air = flux_ts_glob(2)
+      gtc_flux_sff = flux_ts_glob(3)
+      gtc_flux_lnd = flux_ts_glob(4)
+      gtc_flux_ocn = flux_ts_glob(5)
 
       gtc_mflx_sfc = flux_mon_glob(1)
       gtc_mflx_air = flux_mon_glob(2)
@@ -503,19 +533,31 @@ contains
          write(iulog,C_FA0 ) 'averaged',   'integrated'
          write(iulog,C_FA0 ) 'kgCO2/m2/s', 'kgCO2/m2'
 
-         write(iulog, '(71("-"),"|",20("-"))')
+         write(iulog, '(71("-"),"|",26("-"))')
+
+         write(iulog,C_FF) 'Sfc Fssl Fuel Flux', gtc_flux_sff, gtc_flux_sff * dtime
+         write(iulog,C_FF) 'Land  Surface Flux', gtc_flux_lnd, gtc_flux_lnd * dtime
+         write(iulog,C_FF) 'Ocean Surface Flux', gtc_flux_ocn, gtc_flux_ocn * dtime
+
+         write(iulog, '(71("-"),"|",26("-"))')
+
+         write(iulog,C_FF) '   *SUM*', &
+                 (gtc_flux_sff + gtc_flux_lnd + gtc_flux_ocn), &
+                 (gtc_flux_sff + gtc_flux_lnd + gtc_flux_ocn) * dtime
+
+         write(iulog, '(71("-"),"|",26("-"))')
 
          write(iulog,C_FF) 'Surface  Emissions', gtc_flux_sfc, gtc_flux_sfc * dtime
          write(iulog,C_FF) 'Aircraft Emissions', gtc_flux_air, gtc_flux_air * dtime
 
-         write(iulog, '(71("-"),"|",23("-"))')
-
-         write(iulog,C_FF) '   *SUM*', &
-              gtc_flux_tot, gtc_flux_tot * dtime
+         write(iulog, '(71("-"),"|",26("-"))')
 
          time_integrated_flux = gtc_flux_tot * dtime
 
-         write(iulog, '(71("-"),"|",23("-"))')
+         write(iulog,C_FF) '   *SUM*', &
+            gtc_flux_tot, time_integrated_flux
+
+         write(iulog, '(71("-"),"|",26("-"))')
 
          write(iulog,*)''
          write(iulog,*)'CO2 MASS (kgCO2/m2) : period = timestep : date = ',cdate,sec
@@ -524,8 +566,7 @@ contains
          write(iulog,C_SA0_2) 'beg', 'end', '*NET CHANGE*'
          write(iulog,C_FS_2) gtc_prev, gtc_curr, gtc_delta
 
-
-         write(iulog, '(71("-"),"|",23("-"))')
+         write(iulog, '(71("-"),"|",26("-"))')
 
          write(iulog,C_FS2_2)'       *SUM*', &
               (gtc_curr - gtc_prev), &
@@ -544,7 +585,7 @@ contains
             end if
          end if
 
-         write(iulog, '(71("-"),"|",23("-"))')
+         write(iulog, '(71("-"),"|",26("-"))')
       end if ! (masterproc .and. co2_print_diags_timestep)
 
       ! Whole run write outs----------------------------------------------------
@@ -557,28 +598,31 @@ contains
             write(iulog,C_FA0 ) 'averaged',   'integrated'
             write(iulog,C_FA0 ) 'kgCO2/m2/s', 'kgCO2/m2'
 
-            write(iulog, '(71("-"),"|",20("-"))')
+            write(iulog, '(71("-"),"|",26("-"))')
+
+            write(iulog,C_FF) 'Accumulated Sfc Fssl Fuel Flux', gtc_iflx_sff / total_seconds, gtc_iflx_sff
+            write(iulog,C_FF) 'Accumulated Land  Surface Flux', gtc_iflx_lnd / total_seconds, gtc_iflx_lnd
+            write(iulog,C_FF) 'Accumulated Ocean Surface Flux', gtc_iflx_ocn / total_seconds, gtc_iflx_ocn
+
+            write(iulog, '(71("-"),"|",26("-"))')
+
+            write(iulog,C_FF) '   *SUM*', &
+                 (gtc_iflx_sff + gtc_iflx_lnd + gtc_iflx_ocn) / total_seconds, &
+                 (gtc_iflx_sff + gtc_iflx_lnd + gtc_iflx_ocn)
+
+            write(iulog, '(71("-"),"|",26("-"))')
 
             write(iulog,C_FF) 'Accumulated Surface Flux      ', gtc_iflx_sfc / total_seconds, gtc_iflx_sfc
             write(iulog,C_FF) 'Accumulated Aircraft Emissions', gtc_iflx_air / total_seconds, gtc_iflx_air
 
-            write(iulog, '(71("-"),"|",23("-"))')
+            write(iulog, '(71("-"),"|",26("-"))')
 
             write(iulog,C_FF) '   *SUM*', &
                  gtc_iflx_tot / total_seconds, gtc_iflx_tot
 
             time_integrated_flux = gtc_iflx_tot
 
-            write(iulog, '(71("-"),"|",20("-"))')
-            write(iulog,C_FF) 'Accumulated Sfc Fssl Fuel Flux', gtc_iflx_sff / total_seconds, gtc_iflx_sff
-            write(iulog,C_FF) 'Accumulated Land  Surface Flux', gtc_iflx_lnd / total_seconds, gtc_iflx_lnd
-            write(iulog,C_FF) 'Accumulated Ocean Surface Flux', gtc_iflx_ocn / total_seconds, gtc_iflx_ocn
-            write(iulog, '(71("-"),"|",20("-"))')
-            write(iulog,C_FF) '   *SUM*', &
-                 (gtc_iflx_sff + gtc_iflx_lnd + gtc_iflx_ocn) / total_seconds, &
-                 (gtc_iflx_sff + gtc_iflx_lnd + gtc_iflx_ocn)
-
-            write(iulog, '(71("-"),"|",23("-"))')
+            write(iulog, '(71("-"),"|",26("-"))')
 
             write(iulog,*)''
             write(iulog,*)'CO2 MASS (kgCO2/m2) : period = full run : date = ',cdate,sec
@@ -587,8 +631,7 @@ contains
             write(iulog,C_SA0_2) 'beg', 'end', '*NET CHANGE*'
             write(iulog,C_FS_2) gtc_init, gtc_curr, (gtc_curr - gtc_init)
 
-
-            write(iulog, '(71("-"),"|",23("-"))')
+            write(iulog, '(71("-"),"|",26("-"))')
 
             write(iulog,C_FS2_2)'       *SUM*', &
                  (gtc_curr - gtc_init), &
@@ -611,7 +654,7 @@ contains
                end if
             end if
 
-            write(iulog, '(71("-"),"|",23("-"))')
+            write(iulog, '(71("-"),"|",26("-"))')
          end if ! (masterproc)
       end if ! ( is_last_step() .and. co2_print_diags_total )
 
@@ -625,28 +668,31 @@ contains
             write(iulog,C_FA0 ) 'averaged',   'integrated'
             write(iulog,C_FA0 ) 'kgCO2/m2/s', 'kgCO2/m2'
 
-            write(iulog, '(71("-"),"|",20("-"))')
+            write(iulog, '(71("-"),"|",26("-"))')
+
+            write(iulog,C_FF) 'Accumulated Sfc Fssl Fuel Flux', gtc_mflx_sff / seconds_in_month, gtc_mflx_sff
+            write(iulog,C_FF) 'Accumulated Land  Surface Flux', gtc_mflx_lnd / seconds_in_month, gtc_mflx_lnd
+            write(iulog,C_FF) 'Accumulated Ocean Surface Flux', gtc_mflx_ocn / seconds_in_month, gtc_mflx_ocn
+
+            write(iulog, '(71("-"),"|",26("-"))')
+
+            write(iulog,C_FF) '   *SUM*', &
+                 (gtc_mflx_sff + gtc_mflx_lnd + gtc_mflx_ocn) / seconds_in_month, &
+                 (gtc_mflx_sff + gtc_mflx_lnd + gtc_mflx_ocn)
+
+            write(iulog, '(71("-"),"|",26("-"))')
 
             write(iulog,C_FF) 'Accumulated Surface Flux      ', gtc_mflx_sfc / seconds_in_month, gtc_mflx_sfc
             write(iulog,C_FF) 'Accumulated Aircraft Emissions', gtc_mflx_air / seconds_in_month, gtc_mflx_air
 
-            write(iulog, '(71("-"),"|",23("-"))')
+            write(iulog, '(71("-"),"|",26("-"))')
 
             write(iulog,C_FF) '   *SUM*', &
                  gtc_mflx_tot / seconds_in_month, gtc_mflx_tot
 
             time_integrated_flux = gtc_mflx_tot
 
-            write(iulog, '(71("-"),"|",20("-"))')
-            write(iulog,C_FF) 'Accumulated Sfc Fssl Fuel Flux', gtc_mflx_sff / seconds_in_month, gtc_mflx_sff
-            write(iulog,C_FF) 'Accumulated Land  Surface Flux', gtc_mflx_lnd / seconds_in_month, gtc_mflx_lnd
-            write(iulog,C_FF) 'Accumulated Ocean Surface Flux', gtc_mflx_ocn / seconds_in_month, gtc_mflx_ocn
-            write(iulog, '(71("-"),"|",20("-"))')
-            write(iulog,C_FF) '   *SUM*', &
-                 (gtc_mflx_sff + gtc_mflx_lnd + gtc_mflx_ocn) / seconds_in_month, &
-                 (gtc_mflx_sff + gtc_mflx_lnd + gtc_mflx_ocn)
-
-            write(iulog, '(71("-"),"|",23("-"))')
+            write(iulog, '(71("-"),"|",26("-"))')
 
             write(iulog,*)''
             write(iulog,*)'CO2 MASS (kgCO2/m2) : period = monthly,: date = ',cdate,sec
@@ -655,8 +701,7 @@ contains
             write(iulog,C_SA0_2) 'beg', 'end', '*NET CHANGE*'
             write(iulog,C_FS_2) gtc_mnst, gtc_curr, (gtc_curr - gtc_mnst)
 
-
-            write(iulog, '(71("-"),"|",23("-"))')
+            write(iulog, '(71("-"),"|",26("-"))')
 
             write(iulog,C_FS2_2)'       *SUM*', &
                  (gtc_curr - gtc_mnst), &
@@ -675,7 +720,7 @@ contains
                end if
             end if
 
-            write(iulog, '(71("-"),"|",23("-"))')
+            write(iulog, '(71("-"),"|",26("-"))')
          end if ! (masterproc)
       end if ! ( is_end_curr_month() .and. co2_print_diags_monthly )
 
@@ -705,6 +750,11 @@ contains
       real(r8), pointer, dimension(:) :: tmpptr_tc_init
       real(r8), pointer, dimension(:) :: tmpptr_tc_mnst
       real(r8), pointer, dimension(:) :: tmpptr_tc_prev
+      real(r8), pointer, dimension(:) :: tmpptr_c_flux_sfc
+      real(r8), pointer, dimension(:) :: tmpptr_c_flux_air
+      real(r8), pointer, dimension(:) :: tmpptr_c_flux_sff
+      real(r8), pointer, dimension(:) :: tmpptr_c_flux_lnd
+      real(r8), pointer, dimension(:) :: tmpptr_c_flux_ocn
       real(r8), pointer, dimension(:) :: tmpptr_c_mflx_sfc
       real(r8), pointer, dimension(:) :: tmpptr_c_mflx_air
       real(r8), pointer, dimension(:) :: tmpptr_c_mflx_sff
@@ -718,6 +768,11 @@ contains
       integer :: tc_init_idx    = 0
       integer :: tc_mnst_idx    = 0
       integer :: tc_prev_idx    = 0
+      integer :: c_flux_sfc_idx = 0
+      integer :: c_flux_air_idx = 0
+      integer :: c_flux_sff_idx = 0
+      integer :: c_flux_lnd_idx = 0
+      integer :: c_flux_ocn_idx = 0
       integer :: c_mflx_sfc_idx = 0
       integer :: c_mflx_air_idx = 0
       integer :: c_mflx_sff_idx = 0
@@ -735,6 +790,12 @@ contains
       tc_init_idx    = pbuf_get_index('tc_init')
       tc_mnst_idx    = pbuf_get_index('tc_mnst')
       tc_prev_idx    = pbuf_get_index('tc_prev')
+      ! timestep fluxes
+      c_flux_sfc_idx = pbuf_get_index('c_flux_sfc')
+      c_flux_air_idx = pbuf_get_index('c_flux_air')
+      c_flux_sff_idx = pbuf_get_index('c_flux_sff')
+      c_flux_lnd_idx = pbuf_get_index('c_flux_lnd')
+      c_flux_ocn_idx = pbuf_get_index('c_flux_ocn')
       ! monthly fluxes
       c_mflx_sfc_idx = pbuf_get_index('c_mflx_sfc')
       c_mflx_air_idx = pbuf_get_index('c_mflx_air')
@@ -755,6 +816,12 @@ contains
          call pbuf_get_field(pbuf_chnk, tc_init_idx, tmpptr_tc_init )
          call pbuf_get_field(pbuf_chnk, tc_mnst_idx, tmpptr_tc_mnst )
          call pbuf_get_field(pbuf_chnk, tc_prev_idx, tmpptr_tc_prev )
+         ! timestep fluxes
+         call pbuf_get_field(pbuf_chnk, c_flux_sfc_idx, tmpptr_c_flux_sfc )
+         call pbuf_get_field(pbuf_chnk, c_flux_air_idx, tmpptr_c_flux_air )
+         call pbuf_get_field(pbuf_chnk, c_flux_sff_idx, tmpptr_c_flux_sff )
+         call pbuf_get_field(pbuf_chnk, c_flux_lnd_idx, tmpptr_c_flux_lnd )
+         call pbuf_get_field(pbuf_chnk, c_flux_ocn_idx, tmpptr_c_flux_ocn )
          ! monthly fluxes
          call pbuf_get_field(pbuf_chnk, c_mflx_sfc_idx, tmpptr_c_mflx_sfc )
          call pbuf_get_field(pbuf_chnk, c_mflx_air_idx, tmpptr_c_mflx_air )
@@ -772,6 +839,12 @@ contains
             tmpptr_tc_init(i)    = state(chnk)%tc_init(i)
             tmpptr_tc_mnst(i)    = state(chnk)%tc_mnst(i)
             tmpptr_tc_prev(i)    = state(chnk)%tc_prev(i)
+            ! timestep fluxes
+            tmpptr_c_flux_sfc(i) = state(chnk)%c_flux_sfc(i)
+            tmpptr_c_flux_air(i) = state(chnk)%c_flux_air(i)
+            tmpptr_c_flux_sff(i) = state(chnk)%c_flux_sff(i)
+            tmpptr_c_flux_lnd(i) = state(chnk)%c_flux_lnd(i)
+            tmpptr_c_flux_ocn(i) = state(chnk)%c_flux_ocn(i)
             ! monthly fluxes
             tmpptr_c_mflx_sfc(i) = state(chnk)%c_mflx_sfc(i)
             tmpptr_c_mflx_air(i) = state(chnk)%c_mflx_air(i)
@@ -812,6 +885,11 @@ contains
       real(r8), pointer, dimension(:) :: tmpptr_tc_init
       real(r8), pointer, dimension(:) :: tmpptr_tc_mnst
       real(r8), pointer, dimension(:) :: tmpptr_tc_prev
+      real(r8), pointer, dimension(:) :: tmpptr_c_flux_sfc
+      real(r8), pointer, dimension(:) :: tmpptr_c_flux_air
+      real(r8), pointer, dimension(:) :: tmpptr_c_flux_sff
+      real(r8), pointer, dimension(:) :: tmpptr_c_flux_lnd
+      real(r8), pointer, dimension(:) :: tmpptr_c_flux_ocn
       real(r8), pointer, dimension(:) :: tmpptr_c_mflx_sfc
       real(r8), pointer, dimension(:) :: tmpptr_c_mflx_air
       real(r8), pointer, dimension(:) :: tmpptr_c_mflx_sff
@@ -825,6 +903,11 @@ contains
       integer :: tc_init_idx    = 0
       integer :: tc_mnst_idx    = 0
       integer :: tc_prev_idx    = 0
+      integer :: c_flux_sfc_idx = 0
+      integer :: c_flux_air_idx = 0
+      integer :: c_flux_sff_idx = 0
+      integer :: c_flux_lnd_idx = 0
+      integer :: c_flux_ocn_idx = 0
       integer :: c_mflx_sfc_idx = 0
       integer :: c_mflx_air_idx = 0
       integer :: c_mflx_sff_idx = 0
@@ -843,6 +926,12 @@ contains
       tc_init_idx    = pbuf_get_index('tc_init')
       tc_mnst_idx    = pbuf_get_index('tc_mnst')
       tc_prev_idx    = pbuf_get_index('tc_prev')
+      ! timestep fluxes
+      c_flux_sfc_idx = pbuf_get_index('c_flux_sfc')
+      c_flux_air_idx = pbuf_get_index('c_flux_air')
+      c_flux_sff_idx = pbuf_get_index('c_flux_sff')
+      c_flux_lnd_idx = pbuf_get_index('c_flux_lnd')
+      c_flux_ocn_idx = pbuf_get_index('c_flux_ocn')
       ! monthly fluxes
       c_mflx_sfc_idx = pbuf_get_index('c_mflx_sfc')
       c_mflx_air_idx = pbuf_get_index('c_mflx_air')
@@ -863,6 +952,12 @@ contains
          call pbuf_get_field(pbuf_chnk, tc_init_idx, tmpptr_tc_init )
          call pbuf_get_field(pbuf_chnk, tc_mnst_idx, tmpptr_tc_mnst )
          call pbuf_get_field(pbuf_chnk, tc_prev_idx, tmpptr_tc_prev )
+         ! timestep fluxes
+         call pbuf_get_field(pbuf_chnk, c_flux_sfc_idx, tmpptr_c_flux_sfc )
+         call pbuf_get_field(pbuf_chnk, c_flux_air_idx, tmpptr_c_flux_air )
+         call pbuf_get_field(pbuf_chnk, c_flux_sff_idx, tmpptr_c_flux_sff )
+         call pbuf_get_field(pbuf_chnk, c_flux_lnd_idx, tmpptr_c_flux_lnd )
+         call pbuf_get_field(pbuf_chnk, c_flux_ocn_idx, tmpptr_c_flux_ocn )
          ! monthly fluxes
          call pbuf_get_field(pbuf_chnk, c_mflx_sfc_idx, tmpptr_c_mflx_sfc )
          call pbuf_get_field(pbuf_chnk, c_mflx_air_idx, tmpptr_c_mflx_air )
@@ -880,6 +975,12 @@ contains
             state(chnk)%tc_init(i)    = tmpptr_tc_init(i)
             state(chnk)%tc_mnst(i)    = tmpptr_tc_mnst(i)
             state(chnk)%tc_prev(i)    = tmpptr_tc_prev(i)
+            ! timestep fluxes
+            tmpptr_c_flux_sfc(i) = state(chnk)%c_flux_sfc(i)
+            tmpptr_c_flux_air(i) = state(chnk)%c_flux_air(i)
+            tmpptr_c_flux_sff(i) = state(chnk)%c_flux_sff(i)
+            tmpptr_c_flux_lnd(i) = state(chnk)%c_flux_lnd(i)
+            tmpptr_c_flux_ocn(i) = state(chnk)%c_flux_ocn(i)
             ! monthly fluxes
             state(chnk)%c_mflx_sfc(i) = tmpptr_c_mflx_sfc(i)
             state(chnk)%c_mflx_air(i) = tmpptr_c_mflx_air(i)

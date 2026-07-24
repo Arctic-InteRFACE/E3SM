@@ -18,8 +18,10 @@ on:
       - 'externals/haero'
       - 'externals/scorpio'
       # second, no to these
+      - '!components/eamxx/.clang-format'
       - '!components/eamxx/docs/**'
       - '!components/eamxx/mkdocs.yml'
+      - '!components/eamxx/cime_config/**'
 
   # Manual run is used to bless
   workflow_dispatch:
@@ -29,8 +31,9 @@ on:
         required: true
         type: choice
         options:
-          - gcc-openmp
-          - gcc-cuda
+          - gnu-openmp
+          - gnu-cuda
+          - oneapi-openmp
           - all
       bless:
         description: 'Generate baselines'
@@ -40,10 +43,15 @@ on:
         description: 'Force cdash submission'
         required: true
         type: boolean
+      use_kokkos_dev:
+        description: 'Run with Kokkos develop branch'
+        required: true
+        type: boolean
 
   # Add schedule trigger for nightly runs at midnight MT (Standard Time)
   schedule:
     - cron: '0 7 * * *'  # Runs at 7 AM UTC, which is midnight MT during Standard Time
+    - cron: '0 7 * * 1'  # Weekly run every Monday at 7 AM UTC (using Kokkos develop branch)
 
 concurrency:
   # Two runs are in the same group if they are testing the same git ref
@@ -58,26 +66,32 @@ env:
   generate: ${{ github.event_name == 'workflow_dispatch' && inputs.bless }}
   # Do EKAT testing for nightlies or (TODO: if EKAT label is present)
   ekat: ${{ github.event_name == 'schedule' }}
+  # For the weekly run, we test using the kokkos develop branch
+  kokkos_dev_test: ${{ github.event_name == 'schedule' && github.event.schedule == '0 7 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.use_kokkos_dev) }}
+
+defaults:
+  run:
+    shell: bash -leo pipefail {0}
 
 jobs:
-  gcc-openmp:
+  gnu-openmp:
     if: |
       ${{
         github.event_name != 'workflow_dispatch' ||
         (
-          github.event.inputs.job_to_run == 'gcc-openmp' ||
+          github.event.inputs.job_to_run == 'gnu-openmp' ||
           github.event.inputs.job_to_run == 'all'
         )
       }}
-    runs-on:  [self-hosted, ghci-snl-cpu, gcc]
+    runs-on:  [self-hosted, ghci-snl, gnu]
     strategy:
       fail-fast: false
       matrix:
         build_type: [sp, dbg, fpe, opt]
-    name: gcc-openmp / ${{ matrix.build_type }}
+    name: gnu-openmp / ${{ matrix.build_type }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           show-progress: false
@@ -88,21 +102,56 @@ jobs:
         uses: ./.github/actions/test-all-eamxx
         with:
           build_type: ${{ matrix.build_type }}
-          machine: ghci-snl-cpu
+          machine: ghci-snl-gnu
           generate: ${{ env.generate }}
           submit: ${{ env.submit }}
           cmake-configs: Kokkos_ENABLE_OPENMP=ON
           ekat: ${{ env.ekat }}
-  gcc-cuda:
+          kokkos_develop: ${{ env.kokkos_dev_test }}
+  oneapi-openmp:
     if: |
       ${{
         github.event_name != 'workflow_dispatch' ||
         (
-          github.event.inputs.job_to_run == 'gcc-cuda' ||
+          github.event.inputs.job_to_run == 'oneapi-openmp' ||
           github.event.inputs.job_to_run == 'all'
         )
       }}
-    runs-on:  [self-hosted, ghci-snl-cuda, cuda, gcc]
+    runs-on:  [self-hosted, ghci-snl, oneapi]
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [opt]
+    name: oneapi-openmp / ${{ matrix.build_type }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          show-progress: false
+          submodules: recursive
+      - name: Show action trigger
+        uses: ./.github/actions/show-workflow-trigger
+      - name: Run tests
+        uses: ./.github/actions/test-all-eamxx
+        with:
+          build_type: ${{ matrix.build_type }}
+          machine: ghci-snl-oneapi
+          generate: ${{ env.generate }}
+          submit: ${{ env.submit }}
+          cmake-configs: Kokkos_ENABLE_OPENMP=ON
+          ekat: ${{ env.ekat }}
+          kokkos_develop: ${{ env.kokkos_dev_test }}
+  gnu-cuda:
+    if: |
+      ${{
+        github.event_name != 'workflow_dispatch' ||
+        (
+          github.event.inputs.job_to_run == 'gnu-cuda' ||
+          github.event.inputs.job_to_run == 'all'
+        )
+      }}
+    runs-on:  [self-hosted, ghci-snl, cuda]
     strategy:
       fail-fast: false
       matrix:
@@ -113,10 +162,10 @@ jobs:
             SK: ON
           - build_type: opt
             SK: OFF
-    name: gcc-cuda / ${{ matrix.test.build_type }}
+    name: gnu-cuda / ${{ matrix.test.build_type }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           show-progress: false
@@ -161,3 +210,4 @@ jobs:
           submit: ${{ env.submit }}
           cmake-configs: Kokkos_ARCH_HOPPER90=${{ env.Hopper }};Kokkos_ARCH_AMPERE80=${{ env.Ampere }};Kokkos_ARCH_VOLTA70=${{ env.Volta }};CMAKE_CUDA_ARCHITECTURES=${{ env.CUDA_ARCH }};SCREAM_SMALL_KERNELS=${{ matrix.test.SK }}
           ekat: ${{ env.ekat }}
+          kokkos_develop: ${{ env.kokkos_dev_test }}

@@ -1,0 +1,168 @@
+#include "histogram.hpp"
+
+#include <ekat_team_policy_utils.hpp>
+#include <ekat_string_utils.hpp>
+
+
+namespace scream {
+
+Histogram::Histogram(const ekat::Comm &comm, const ekat::ParameterList &params,
+                     const std::shared_ptr<const AbstractGrid>& grid)
+ : AbstractDiagnostic(comm, params, grid)
+{
+  m_field_name = m_params.get<std::string>("field_name");
+  const std::string bin_config = m_params.get<std::string>("bin_configuration");
+
+  // extract bin values from configuration, append end values, and check
+  const std::vector<std::string> bin_strings = ekat::split(bin_config, "_");
+  m_bin_reals.reserve(bin_strings.size()+2);
+  m_bin_reals.push_back(std::numeric_limits<Real>::lowest());
+  for (const auto& s : bin_strings) {
+    auto val = std::stod(s);
+    EKAT_REQUIRE_MSG(val > m_bin_reals.back(),
+        "Error! Histogram bin values must be monotonically increasing.\n"
+        " - bin configuration: " + bin_config + "\n");
+    m_bin_reals.push_back(val);
+  }
+  m_bin_reals.push_back(std::numeric_limits<Real>::max());
+
+  m_field_in_names.push_back(m_field_name);
+}
+
+void Histogram::initialize_impl()
+{
+  using ShortFieldTagsNames::CMP;
+
+  const auto& field    = m_fields_in.at(m_field_in_names.front());
+  const auto& field_id = field.get_header().get_identifier();
+  const auto& field_layout = field_id.get_layout();
+  EKAT_REQUIRE_MSG(field_layout.rank() >= 1 && field_layout.rank() <= 3,
+      "Error! Field rank not supported by Histogram.\n"
+      " - field name: " + field_id.name() + "\n"
+      " - field layout: " + field_layout.to_string() + "\n");
+
+  // allocate histogram field
+  const int num_bins = m_bin_reals.size()-1;
+  const auto& bin_config = m_params.get<std::string>("bin_configuration");
+  auto diag_name = m_field_name + "_histogram_" + bin_config;
+  FieldLayout diagnostic_layout({CMP}, {num_bins}, {"bin"});
+  FieldIdentifier diagnostic_id(diag_name, diagnostic_layout,
+                                ekat::units::none, field_id.get_grid_name());
+  m_diagnostic_output = Field(diagnostic_id,true);
+
+  // allocate field for bin values
+  FieldLayout bin_values_layout({CMP}, {num_bins+1}, {"bin"});
+  auto bin_values_id = field_id.clone(diag_name + "_bin_values").reset_layout(bin_values_layout);
+  m_bin_values = Field(bin_values_id);
+  m_bin_values.allocate_view();
+
+  // copy bin values into field
+  auto bin_values_view = m_bin_values.get_view<Real *>();
+  auto bin_values_view_host = Kokkos::create_mirror_view(bin_values_view);
+  for (auto i=0; i < bin_values_layout.dim(0); i++)
+    bin_values_view_host(i) = m_bin_reals[i];
+  Kokkos::deep_copy(bin_values_view,bin_values_view_host);
+}
+
+void Histogram::compute_impl()
+{
+  const auto& field = m_fields_in.at(m_field_name);
+  auto field_layout = field.get_header().get_identifier().get_layout();
+  auto histogram_layout = m_diagnostic_output.get_header().get_identifier().get_layout();
+  const int num_bins = histogram_layout.dim(0);
+
+  auto bin_values_view = m_bin_values.get_view<Real *>();
+  auto histogram_view = m_diagnostic_output.get_view<Real *>();
+  using KT         = ekat::KokkosTypes<DefaultDevice>;
+  using TeamPolicy = Kokkos::TeamPolicy<Field::device_t::execution_space>;
+  using TeamMember = typename TeamPolicy::member_type;
+  using TPF        = ekat::TeamPolicyFactory<typename KT::ExeSpace>;
+  using cmask1d_t = Field::view_dev_t<const int*>;
+  using cmask2d_t = Field::view_dev_t<const int**>;
+  using cmask3d_t = Field::view_dev_t<const int***>;
+
+  bool masked = field.has_valid_mask();
+  switch (field_layout.rank())
+  {
+    case 1: {
+      const int d1 = field_layout.dim(0);
+      auto field_view = field.get_view<const Real *>();
+      TeamPolicy team_policy = TPF::get_default_team_policy(num_bins, d1);
+      auto mask_view = masked ? field.get_valid_mask().get_view<const int*>() : cmask1d_t{};
+      Kokkos::parallel_for("compute_histogram_" + field.name(), team_policy,
+          KOKKOS_LAMBDA(const TeamMember &tm) {
+            const int bin_i = tm.league_rank();
+            const Real bin_lower = bin_values_view(bin_i);
+            const Real bin_upper = bin_values_view(bin_i+1);
+            Kokkos::parallel_reduce(Kokkos::TeamVectorRange(tm, d1),
+                [&](int i, Real &val) {
+                  if ((not masked or mask_view(i)!=0) and
+                      (bin_lower <= field_view(i)) && (field_view(i) < bin_upper))
+                    val += sp(1.0);
+                },
+                histogram_view(bin_i));
+          });
+    } break;
+    case 2: {
+      const int d1 = field_layout.dim(0);
+      const int d2 = field_layout.dim(1);
+      auto field_view = field.get_view<const Real **>();
+      TeamPolicy team_policy = TPF::get_default_team_policy(num_bins, d1*d2);
+      auto mask_view = masked ? field.get_valid_mask().get_view<const int**>() : cmask2d_t{};
+      Kokkos::parallel_for("compute_histogram_" + field.name(), team_policy,
+          KOKKOS_LAMBDA(const TeamMember &tm) {
+            const int bin_i = tm.league_rank();
+            const Real bin_lower = bin_values_view(bin_i);
+            const Real bin_upper = bin_values_view(bin_i+1);
+            Kokkos::parallel_reduce(Kokkos::TeamVectorRange(tm, d1*d2),
+                [&](int ind, Real &val) {
+                  const int i1 = ind / d2;
+                  const int i2 = ind % d2;
+                  if ((not masked or mask_view(i1,i2)!=0) and
+                      (bin_lower <= field_view(i1,i2)) && (field_view(i1,i2) < bin_upper))
+                    val += sp(1.0);
+                },
+                histogram_view(bin_i));
+          });
+    } break;
+    case 3: {
+      const int d1 = field_layout.dim(0);
+      const int d2 = field_layout.dim(1);
+      const int d3 = field_layout.dim(2);
+      auto field_view = field.get_view<const Real ***>();
+      TeamPolicy team_policy = TPF::get_default_team_policy(num_bins, d1*d2*d3);
+      auto mask_view = masked ? field.get_valid_mask().get_view<const int***>() : cmask3d_t{};
+      Kokkos::parallel_for("compute_histogram_" + field.name(), team_policy,
+          KOKKOS_LAMBDA(const TeamMember &tm) {
+            const int bin_i = tm.league_rank();
+            const Real bin_lower = bin_values_view(bin_i);
+            const Real bin_upper = bin_values_view(bin_i+1);
+            Kokkos::parallel_reduce(Kokkos::TeamVectorRange(tm, d1*d2*d3),
+                [&](int ind, Real &val) {
+                  const int i1 = ind / (d2*d3);
+                  const int ind2 = ind % (d2*d3);
+                  const int i2 = ind2 / d3;
+                  const int i3 = ind2 % d3;
+                  if ((not masked or mask_view(i1,i2,i3)!=0) and
+                      (bin_lower <= field_view(i1,i2,i3)) && (field_view(i1,i2,i3) < bin_upper))
+                    val += sp(1.0);
+                },
+                histogram_view(bin_i));
+          });
+    } break;
+
+    default:
+      EKAT_ERROR_MSG("Error! Unsupported field rank for histogram.\n");
+  }
+
+  // TODO: use device-side MPI calls
+  // TODO: the dev ptr causes problems; revisit this later
+  // TODO: doing cuda-aware MPI allreduce would be ~10% faster
+  Kokkos::fence();
+  m_diagnostic_output.sync_to_host();
+  m_comm.all_reduce(m_diagnostic_output.template get_internal_view_data<Real, Host>(),
+                      histogram_layout.size(), MPI_SUM);
+  m_diagnostic_output.sync_to_dev();
+}
+
+} // namespace scream

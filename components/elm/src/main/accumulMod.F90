@@ -233,7 +233,7 @@ contains
        write(iulog,*)
     endif
 
-1002 format(' No',' Name    ',' Units   ',' Type    ','Period',' Inival',' Description')
+1002 format(' No',' Name    ',' Units   ',' Type          ','Period',' Inival',' Description')
 1003 format((1x,i2),(1x,a8),(1x,a8),(1x,a8), (1x,i7),(1x,f4.0),(1x,a40))
 1004 format((1x,i2),(1x,a8),(1x,a8),(1x,a8),'  N.A.',(1x,f4.0),(1x,a40))
 
@@ -614,7 +614,7 @@ contains
 
        varname = trim(accum(nf)%name) // '_PERIOD'
        call restartvar(ncid=ncid, flag=flag, varname=varname, xtype=ncd_int, &
-            long_name='', units='time steps', &
+            long_name=trim(accum(nf)%desc), units='time steps', &
             imissing_value=ispval, ifill_value=huge(1), &
             interpinic_flag='copy', &
             data=accum(nf)%period, readvar=readvar)

@@ -1,9 +1,10 @@
 #include "share/io/eamxx_io_utils.hpp"
 
-#include "share/io/eamxx_scorpio_interface.hpp"
-#include "share/grid/library_grids_manager.hpp"
+#include "share/scorpio_interface/eamxx_scorpio_interface.hpp"
 #include "share/util/eamxx_utils.hpp"
-#include "share/eamxx_config.hpp"
+#include "share/core/eamxx_config.hpp"
+
+#include <ekat_string_utils.hpp>
 
 #include <fstream>
 #include <regex>
@@ -99,27 +100,7 @@ std::string find_filename_in_rpointer (
   return filename;
 }
 
-void write_timestamp (const std::string& filename, const std::string& ts_name,
-                      const util::TimeStamp& ts, const bool write_nsteps)
-{
-  scorpio::set_attribute(filename,"GLOBAL",ts_name,ts.to_string());
-  if (write_nsteps) {
-    scorpio::set_attribute(filename,"GLOBAL",ts_name+"_nsteps",ts.get_num_steps());
-  }
-}
-
-util::TimeStamp read_timestamp (const std::string& filename,
-                                const std::string& ts_name,
-                                const bool read_nsteps)
-{
-  auto ts = util::str_to_time_stamp(scorpio::get_attribute<std::string>(filename,"GLOBAL",ts_name));
-  if (read_nsteps and scorpio::has_attribute(filename,"GLOBAL",ts_name+"_nsteps")) {
-    ts.set_num_steps(scorpio::get_attribute<int>(filename,"GLOBAL",ts_name+"_nsteps"));
-  }
-  return ts;
-}
-
-std::shared_ptr<AtmosphereDiagnostic>
+std::shared_ptr<AbstractDiagnostic>
 create_diagnostic (const std::string& diag_field_name,
                    const std::shared_ptr<const AbstractGrid>& grid)
 {
@@ -127,19 +108,41 @@ create_diagnostic (const std::string& diag_field_name,
   //       of each group in the matches output var!
   // Note: use raw string syntax R"(<string>)" to avoid having to escape the \ character
   // Note: the number for field_at_p/h can match positive integer/floating-point numbers
-  std::regex field_at_l (R"(([A-Za-z0-9_]+)_at_(lev_(\d+)|model_(top|bot))$)");
-  std::regex field_at_p (R"(([A-Za-z0-9_]+)_at_(\d+(\.\d+)?)(hPa|mb|Pa)$)");
-  std::regex field_at_h (R"(([A-Za-z0-9_]+)_at_(\d+(\.\d+)?)(m)_above_(sealevel|surface)$)");
+  // Start with a generic for a field name allowing for all letters, all numbers, dash, dot, plus, minus, product, and division
+  // Escaping all the special ones just in case
+  std::string generic_field = "([A-Za-z0-9_.+\\-\\*\\÷]+)";
+
+  // ── Built-in aliases ──────────────────────────────────────────────────────
+  // Recognized shorthand patterns expand to canonical composable expressions.
+  // Checked before all other regexes; expansion recurses into create_diagnostic.
+  {
+    std::smatch alias_matches;
+    std::regex bt (generic_field + "_atm_backtend$");
+    if (std::regex_search(diag_field_name, alias_matches, bt)) {
+      const auto f = alias_matches[1].str();
+      return create_diagnostic(f + "_minus_" + f + "_prev_over_dt", grid);
+    }
+    // More built-in aliases may be added here.
+  }
+  std::regex field_at_l (R"()" + generic_field + R"(_at_(lev_(\d+)|model_(top|bot))$)");
+  std::regex field_at_p (R"()" + generic_field + R"(_at_(\d+(\.\d+)?)(hPa|mb|Pa)$)");
+  std::regex field_at_h (R"()" + generic_field + R"(_at_(\d+(\.\d+)?)(m)_above_(sealevel|surface)$)");
   std::regex surf_mass_flux ("precip_(liq|ice|total)_surf_mass_flux$");
   std::regex water_path ("(Ice|Liq|Rain|Rime|Vap)WaterPath$");
   std::regex number_path ("(Ice|Liq|Rain)NumberPath$");
   std::regex aerocom_cld ("AeroComCld(Top|Bot)$");
   std::regex vap_flux ("(Meridional|Zonal)VapFlux$");
-  std::regex backtend ("([A-Za-z0-9_]+)_atm_backtend$");
+  std::regex field_prev (generic_field + "_prev$");
+  std::regex field_over_dt (generic_field + "_over_dt$");
   std::regex pot_temp ("(Liq)?PotentialTemperature$");
   std::regex vert_layer ("(z|geopotential|height)_(mid|int)$");
-  std::regex horiz_avg ("([A-Za-z0-9_]+)_horiz_avg$");
-  std::regex vert_contract ("([A-Za-z0-9_]+)_vert_(avg|sum)(_((dp|dz)_weighted))?$");
+  std::regex horiz_avg (generic_field + "_horiz_avg$");
+  std::regex vert_contract (generic_field + "_vert_(avg|sum)(_((dp|dz)_weighted))?$");
+  std::regex zonal_avg (R"()" + generic_field + R"(_zonal_avg_(\d+)_bins$)");
+  std::regex conditional_sampling (R"()" + generic_field + R"(_where_)" + generic_field + R"(_(gt|ge|eq|ne|le|lt)_)" + generic_field + "$");
+  std::regex binary_ops (generic_field + "_" "(plus|minus|times|over)" + "_" + generic_field + "$");
+  std::regex histogram (R"()" + generic_field + R"(_histogram_(\d+(\.\d+)?(_\d+(\.\d+)?)+)$)");
+  std::regex vert_derivative (generic_field + "_(p|z)vert_derivative$");
 
   std::string diag_name;
   std::smatch matches;
@@ -173,15 +176,22 @@ create_diagnostic (const std::string& diag_field_name,
     diag_name = "NumberPath";
     params.set<std::string>("number_kind",matches[1].str());
   } else if (std::regex_search(diag_field_name,matches,aerocom_cld)) {
+    EKAT_ERROR_MSG("Error! AeroComCld diags are disabled for now. Contact developers.\n"
+                    "      Some recent development made the code produce bad values,\n"
+                    "      even runtime aborts due to NaNs.\n"
+                    "      An alternative is to request variables like cdnc_at_cldtop,\n"
+                    "      which remain unaffected and scientifically valid.\n");
     diag_name = "AeroComCld";
     params.set<std::string>("aero_com_cld_kind",matches[1].str());
   } else if (std::regex_search(diag_field_name,matches,vap_flux)) {
     diag_name = "VaporFlux";
     params.set<std::string>("wind_component",matches[1].str());
-  } else if (std::regex_search(diag_field_name,matches,backtend)) {
-    diag_name = "AtmBackTendDiag";
+  } else if (std::regex_search(diag_field_name,matches,field_over_dt)) {
+    // NOTE: _over_dt must be checked before binary_ops to prevent "X_over_dt" from being
+    // misinterpreted as BinaryOp(X, over, dt).
+    diag_name = "FieldOverDt";
     params.set("grid_name",grid->name());
-    params.set<std::string>("tendency_name",matches[1].str());
+    params.set<std::string>("field_name",matches[1].str());
   } else if (std::regex_search(diag_field_name,matches,pot_temp)) {
     diag_name = "PotentialTemperature";
     params.set<std::string>("temperature_kind", matches[1].str()!="" ? matches[1].str() : std::string("Tot"));
@@ -195,12 +205,12 @@ create_diagnostic (const std::string& diag_field_name,
     params.set<std::string>("vert_location","mid");
   }
   else if (std::regex_search(diag_field_name,matches,horiz_avg)) {
-    diag_name = "HorizAvgDiag";
+    diag_name = "HorizAvg";
     params.set("grid_name",grid->name());
     params.set<std::string>("field_name",matches[1].str());
   }
   else if (std::regex_search(diag_field_name,matches,vert_contract)) {
-    diag_name = "VertContractDiag";
+    diag_name = "VertContract";
     params.set("grid_name", grid->name());
     params.set<std::string>("field_name", matches[1].str());
     params.set<std::string>("contract_method", matches[2].str());
@@ -210,6 +220,46 @@ create_diagnostic (const std::string& diag_field_name,
       params.set<std::string>("weighting_method", matches[5].str());
     }
   }
+  else if (std::regex_search(diag_field_name,matches,vert_derivative)) {
+    diag_name = "VertDerivative";
+    params.set("grid_name", grid->name());
+    params.set<std::string>("field_name", matches[1].str());
+    params.set<std::string>("derivative_method", matches[2].str());
+  }
+  else if (std::regex_search(diag_field_name,matches,zonal_avg)) {
+    diag_name = "ZonalAvg";
+    params.set("grid_name", grid->name());
+    params.set<std::string>("field_name", matches[1].str());
+    params.set<std::string>("number_of_zonal_bins", matches[2].str());
+  }
+  else if (std::regex_search(diag_field_name,matches,conditional_sampling)) {
+    diag_name = "ConditionalSampling";
+    params.set("grid_name", grid->name());
+    params.set<std::string>("field_name", matches[1].str());
+    params.set<std::string>("condition_lhs", matches[2].str());
+    params.set<std::string>("condition_cmp", matches[3].str());
+    params.set<std::string>("condition_rhs", matches[4].str());
+  }
+  else if (std::regex_search(diag_field_name,matches,binary_ops)) {
+    diag_name = "BinaryOp";
+    params.set("grid_name", grid->name());
+    params.set<std::string>("arg1", matches[1].str());
+    params.set<std::string>("arg2", matches[3].str());
+    params.set<std::string>("binary_op", matches[2].str());
+  }
+  // NOTE: field_prev must be checked AFTER binary_ops so that "X_minus_X_prev"
+  // is parsed as BinaryOp(X, minus, X_prev) rather than FieldPrev(X_minus_X).
+  else if (std::regex_search(diag_field_name,matches,field_prev)) {
+    diag_name = "FieldPrev";
+    params.set("grid_name",grid->name());
+    params.set<std::string>("field_name",matches[1].str());
+  }
+  else if (std::regex_search(diag_field_name,matches,histogram)) {
+    diag_name = "Histogram";
+    params.set("grid_name", grid->name());
+    params.set<std::string>("field_name", matches[1].str());
+    params.set<std::string>("bin_configuration", matches[2].str());
+  }
   else
   {
     // No existing special regex matches, so we assume that the diag field name IS the diag name.
@@ -217,9 +267,7 @@ create_diagnostic (const std::string& diag_field_name,
   }
 
   auto comm = grid->get_comm();
-  auto diag = AtmosphereDiagnosticFactory::instance().create(diag_name,comm,params);
-  auto gm = std::make_shared<LibraryGridsManager>(grid);
-  diag->set_grids(gm);
+  auto diag = DiagnosticFactory::instance().create(diag_name,comm,params,grid);
 
   return diag;
 }

@@ -126,6 +126,14 @@ Default: .false.
 If .true., mosart will read in bgc nutrients and send to ocean.
 </entry>
 
+<entry id="redirect_negative_qgwl" 
+       type="logical" 
+       category="mosart"
+       group="mosart_inparm">
+Default: .false.
+If .true., mosart will redirect negative qgwl to the ocean.
+</entry>
+
 <entry id="rstraflag" 
        type="logical" 
        category="mosart"
@@ -297,6 +305,15 @@ Default: ' '
        valid_values="" >
 Fields to add to history tape series  3.
 Default: ' '
+</entry>
+
+<entry id="rtmhist_empty_htapes"
+       type="logical"
+       category="history"
+       group="mosart_inparm"
+       valid_values="" >
+If TRUE, no history fields are output by default on history tapes.
+Default: .false.
 </entry>
 
 <entry id="rtmhist_mfilt" 

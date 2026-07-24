@@ -133,16 +133,20 @@ module li_time_integration_fe_rk
                                                   floatingBasalMassBalApplied, &
                                                   fluxAcrossGroundingLine, &
                                                   fluxAcrossGroundingLineOnCells, &
-                                                  groundedToFloatingThickness
+                                                  groundedToFloatingThickness, &
+                                                  calvingThickness, &
+                                                  calvingVelocity, &
+                                                  calvingThicknessFromThreshold
       real (kind=RKIND), dimension(:), allocatable :: sfcMassBalAccum, &
                                                       basalMassBalAccum, &
                                                       groundedSfcMassBalAccum, &
                                                       groundedBasalMassBalAccum, &
                                                       floatingBasalMassBalAccum, &
                                                       fluxAcrossGroundingLineAccum, &
-                                                      fluxAcrossGroundingLineOnCellsAccum
+                                                      fluxAcrossGroundingLineOnCellsAccum, &
+                                                      calvingThicknessAccum
       real (kind=RKIND), dimension(:), pointer :: layerCenterSigma, layerThicknessFractions
-      integer, dimension(:), pointer :: cellMaskPrev  ! cell mask before advection
+      integer, dimension(:), allocatable :: cellMaskPrev, edgeMaskPrev, vertexMaskPrev  ! cell mask before advection
       real (kind=RKIND), dimension(:,:), allocatable :: layerThicknessPrev, &
                                                         layerThicknessTmp, &
                                                         temperaturePrev, &
@@ -152,9 +156,10 @@ module li_time_integration_fe_rk
                                                         damage3d, &
                                                         damage3dPrev
       integer, pointer :: nVertLevels
-      integer, pointer :: nCells, nEdges
+      integer, pointer :: nCells, nEdges, nVertices
+      integer, pointer :: albanyVelocityError
       integer :: iCell1, iCell2, iEdge, theGroundedCell
-      integer, dimension(:), pointer :: edgeMask, cellMask
+      integer, dimension(:), pointer :: edgeMask, cellMask, vertexMask
       real (kind=RKIND), pointer :: deltat, config_ice_density
       real (kind=RKIND) :: deltatFull
       real (kind=RKIND), dimension(4) :: rkSubstepWeights
@@ -191,9 +196,21 @@ module li_time_integration_fe_rk
       call mpas_pool_get_dimension(meshPool, 'nVertLevels', nVertLevels)
       call mpas_pool_get_dimension(meshPool, 'nCells', nCells)
       call mpas_pool_get_dimension(meshPool, 'nEdges', nEdges)
+      call mpas_pool_get_dimension(meshPool, 'nVertices', nVertices)
 
       call mpas_pool_get_array(velocityPool, 'fluxAcrossGroundingLineOnCells', fluxAcrossGroundingLineOnCells)
+      call mpas_pool_get_array(velocityPool, 'albanyVelocityError', albanyVelocityError)
       call mpas_pool_get_array(geometryPool, 'groundedToFloatingThickness', groundedToFloatingThickness)
+      call mpas_pool_get_array(geometryPool, 'calvingThickness', calvingThickness)
+      call mpas_pool_get_array(geometryPool, 'calvingThicknessFromThreshold', calvingThicknessFromThreshold)
+      call mpas_pool_get_array(geometryPool, 'calvingVelocity', calvingVelocity)
+      ! Zero calving values here instead of in calving routine
+      ! because we accumulate some calving thickness in the RK
+      ! loop due to restore-calving before we call the main calving routine.
+      calvingThickness(:) = 0.0_RKIND
+      calvingThicknessFromThreshold(:) = 0.0_RKIND
+      calvingVelocity(:) = 0.0_RKIND
+      albanyVelocityError = 0
 
       allocate(temperaturePrev(nVertLevels, nCells+1))
       allocate(waterFracPrev(nVertLevels, nCells+1))
@@ -204,6 +221,8 @@ module li_time_integration_fe_rk
       allocate(passiveTracer3dPrev(nVertLevels, nCells+1))
       allocate(passiveTracer3d(nVertLevels, nCells+1))
       allocate(cellMaskPrev(nCells+1))
+      allocate(edgeMaskPrev(nEdges+1))
+      allocate(vertexMaskPrev(nVertices+1))
 
       allocate(sfcMassBalAccum(nCells+1))
       allocate(basalMassBalAccum(nCells+1))
@@ -212,6 +231,7 @@ module li_time_integration_fe_rk
       allocate(floatingBasalMassBalAccum(nCells+1))
       allocate(fluxAcrossGroundingLineAccum(nEdges+1))
       allocate(fluxAcrossGroundingLineOnCellsAccum(nCells+1))
+      allocate(calvingThicknessAccum(nCells+1))
 
       temperaturePrev(:,:) = 0.0_RKIND
       waterFracPrev(:,:) = 0.0_RKIND
@@ -221,6 +241,8 @@ module li_time_integration_fe_rk
       damage3d(:,:) = 0.0_RKIND
       passiveTracer3dPrev(:,:) = 0.0_RKIND
       cellMaskPrev(:) = 0
+      edgeMaskPrev(:) = 0
+      vertexMaskPrev(:) = 0
       passiveTracer3d(:,:) = 0.0_RKIND
 
       sfcMassBalAccum(:) = 0.0_RKIND
@@ -230,6 +252,7 @@ module li_time_integration_fe_rk
       floatingBasalMassBalAccum(:) = 0.0_RKIND
       fluxAcrossGroundingLineAccum(:) = 0.0_RKIND
       fluxAcrossGroundingLineOnCellsAccum(:) = 0.0_RKIND
+      calvingThicknessAccum(:) = 0.0_RKIND
 
 ! === Prepare for advection (including CFL checks) ===========
 ! This has to come first currently, because it sets the time step!
@@ -275,14 +298,23 @@ module li_time_integration_fe_rk
       call mpas_pool_get_array(geometryPool, 'passiveTracer2d', passiveTracer2d)
       call mpas_pool_get_array(geometryPool, 'damage', damage)
       call mpas_pool_get_array(geometryPool, 'cellMask', cellMask)
+      call mpas_pool_get_array(geometryPool, 'edgeMask', edgeMask)
+      call mpas_pool_get_array(geometryPool, 'vertexMask', vertexMask, timeLevel=1)
 
       call mpas_pool_get_array(thermalPool, 'temperature', temperature)
       call mpas_pool_get_array(thermalPool, 'waterFrac', waterFrac)
+
+      ! Calculate masks prior to RK loop, but do not update masks within the loop
+      ! to preserve the accuracy of time integration.
+      call li_calculate_mask(meshPool, velocityPool, geometryPool, err_tmp)
+      err = ior(err, err_tmp)
       ! Save relevant fields before RK loop, to be used in update at the end
       temperaturePrev(:,:) = temperature(:,:)
       waterFracPrev(:,:) = waterFrac(:,:)
       layerThicknessPrev(:,:) = layerThickness(:,:)
       cellMaskPrev(:) = cellMask(:)
+      edgeMaskPrev(:) = edgeMask(:)
+      vertexMaskPrev(:) = vertexMask(:)
       do k = 1, nVertLevels
          damage3dPrev(k,:) = damage(:)
          passiveTracer3dPrev(k,:) = passiveTracer2d(:)
@@ -370,11 +402,6 @@ module li_time_integration_fe_rk
                              intArgs=(/config_rk_order/), messageType=MPAS_LOG_ERR)
          return
       endif
-
-      ! Calculate masks prior to RK loop, but do not update masks within the loop
-      ! to preserve the accuracy of time integration.
-      call li_calculate_mask(meshPool, velocityPool, geometryPool, err_tmp)
-      err = ior(err, err_tmp)
 
 ! *** Start RK loop ***
       do rkStage = 1, nRKstages
@@ -506,14 +533,20 @@ module li_time_integration_fe_rk
                ! restore the calving front to its initial position before velocity solve.
                call li_restore_calving_front(domain, err_tmp)
                err = ior(err, err_tmp)
+               call mpas_pool_get_array(geometryPool, 'calvingThickness', calvingThickness)
+               calvingThicknessAccum = calvingThicknessAccum + rkTendWeights(rkStage) * calvingThickness
             endif
             ! We need to remove icebergs between RK stages because the
             ! main calving routine is not called until after the RK loop.
             ! This frequently results in icebergs that causes intermediate
             ! RK stage velocity solves to fail.
             call li_remove_icebergs(domain)
+            call mpas_log_write('Resetting masks')
 
-            call li_velocity_solve(domain, solveVelo=.true., err=err_tmp)
+            cellMask(:) = cellMaskPrev(:)
+            edgeMask(:) = edgeMaskPrev(:)
+            vertexMask(:) = vertexMaskPrev(:)
+            call li_velocity_solve(domain, solveVelo=.true., updateMask=.false., err=err_tmp)
             err = ior(err, err_tmp)
          endif
 ! *** end RK loop ***
@@ -544,7 +577,7 @@ module li_time_integration_fe_rk
       floatingBasalMassBalApplied(:) = floatingBasalMassBalAccum(:)
       fluxAcrossGroundingLine(:) = fluxAcrossGroundingLineAccum(:)
       fluxAcrossGroundingLineOnCells(:) = fluxAcrossGroundingLineOnCellsAccum(:)
-
+      calvingThickness(:) = calvingThicknessAccum(:)
       ! Deallocate arrays for fct
       if ( (trim(config_thickness_advection) .eq. 'fct') .or. &
            (trim(config_tracer_advection) .eq. 'fct') ) then
@@ -603,7 +636,7 @@ module li_time_integration_fe_rk
 
 ! === Solve velocity for final state =====================
       if (solveVeloAfterCalving) then
-         call li_velocity_solve(domain, solveVelo=.true., err=err_tmp)
+         call li_velocity_solve(domain, solveVelo=.true., updateMask=.true., err=err_tmp)
          err = ior(err, err_tmp)
       endif
 
@@ -629,12 +662,16 @@ module li_time_integration_fe_rk
       deallocate(passiveTracer3dPrev)
       deallocate(passiveTracer3d)
       deallocate(cellMaskPrev)
+      deallocate(edgeMaskPrev)
+      deallocate(vertexMaskPrev)
       deallocate(sfcMassBalAccum)
       deallocate(basalMassBalAccum)
       deallocate(groundedSfcMassBalAccum)
       deallocate(groundedBasalMassBalAccum)
       deallocate(floatingBasalMassBalAccum)
       deallocate(fluxAcrossGroundingLineAccum)
+      deallocate(fluxAcrossGroundingLineOnCellsAccum)
+      deallocate(calvingThicknessAccum)
    !--------------------------------------------------------------------
    end subroutine li_time_integrator_forwardeuler_rungekutta
 
@@ -1201,6 +1238,7 @@ module li_time_integration_fe_rk
 
          call mpas_pool_get_dimension(meshPool, 'nCells', nCells)
          call mpas_pool_get_array(geometryPool, 'thickness', thickness, timeLevel=1)
+         call mpas_pool_get_array(geometryPool, 'layerThickness', layerThickness)
 
          allocate( masktmp(nCells + 1) )
          masktmp = 0
@@ -1209,6 +1247,7 @@ module li_time_integration_fe_rk
             masktmp = 1
             thickness = 0.0_RKIND
          end where
+         call li_calculate_layerThickness(meshPool, thickness, layerThickness)
 
          if (config_print_thickness_advection_info) then
 
@@ -1258,7 +1297,6 @@ module li_time_integration_fe_rk
 
             call li_calculate_layerThickness(meshPool, thickness, layerThickness)
          endif
-
          call li_calculate_mask(meshPool, velocityPool, geometryPool, err_tmp)
          call li_update_geometry(geometryPool)
 
@@ -1354,6 +1392,7 @@ module li_time_integration_fe_rk
       ! Only include calving CFL if requested and we are using a calving option that calculates it
       if (config_adaptive_timestep_include_calving .and. ( &
              trim(config_calving) == 'specified_calving_velocity' .or. &
+             trim(config_calving) == 'specified_retreat_velocity' .or. &
              trim(config_calving) == 'eigencalving' .or. &
              trim(config_calving) == 'von_Mises_stress' .or. &
              trim(config_calving) == 'ismip6_retreat' .or. &
@@ -1478,7 +1517,7 @@ module li_time_integration_fe_rk
       ! local variables
       !-----------------------------------------------------------------
       real (kind=RKIND), dimension(:), pointer :: thickness
-      real (kind=RKIND), dimension(:,:), pointer :: layerThickness, layerThicknessEdge, normalVelocity
+      real (kind=RKIND), dimension(:,:), pointer :: layerThickness, layerThicknessEdge, layerNormalVelocity
       integer, dimension(:,:), pointer :: cellsOnEdge
       integer, pointer :: nEdges, nVertLevels
       integer :: iEdge, cell1, cell2, k
@@ -1492,7 +1531,7 @@ module li_time_integration_fe_rk
       call mpas_pool_get_array(geometryPool, 'thickness', thickness, timeLevel = 1)
       call mpas_pool_get_array(geometryPool, 'layerThickness', layerThickness, timeLevel = 1)
       call mpas_pool_get_array(geometryPool, 'layerThicknessEdge', layerThicknessEdge)
-      call mpas_pool_get_array(velocityPool, 'normalVelocity', normalVelocity)
+      call mpas_pool_get_array(velocityPool, 'layerNormalVelocity', layerNormalVelocity)
 
       ! Note: SIA velocity solver uses its own local calculation of h_edge that is always 2nd order.
       ! Note: ocn_diagnostic_solve in mpas_ocn_tendency.F has 2, 3, & 4th order calculations for h_edge that can be used.
@@ -1506,7 +1545,7 @@ module li_time_integration_fe_rk
          cell2 = cellsOnEdge(2,iEdge)
          do k=1, nVertLevels
             ! Calculate h on edges using first order
-            VelSign = sign(1.0_RKIND, normalVelocity(k, iEdge))
+            VelSign = sign(1.0_RKIND, layerNormalVelocity(k, iEdge))
             layerThicknessEdge(k,iEdge) = max(VelSign * layerThickness(k, cell1), &
                VelSign * (-1.0_RKIND) * layerThickness(k, cell2))
             ! + velocity goes from index 1 to 2 in the cellsOnEdge array.
@@ -1615,7 +1654,7 @@ module li_time_integration_fe_rk
       currTime = mpas_get_clock_time(domain % clock, MPAS_NOW, err_tmp)
       call mpas_get_time(curr_time=currTime, dateTimeString=timeStamp, ierr=err_tmp)
       err = ior(err, err_tmp)
-      call mpas_log_write('  Completed timestep.  New time is: ' // trim(timeStamp), flushNow=.true.)
+      call mpas_log_write('Model time updated to: ' // trim(timeStamp), flushNow=.true.)
 
       block => domain % blocklist
       do while (associated(block))

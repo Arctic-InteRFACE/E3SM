@@ -1,10 +1,12 @@
 #ifndef MARINE_ORGANICS_IMPL_HPP
 #define MARINE_ORGANICS_IMPL_HPP
 
-#include "share/grid/remap/identity_remapper.hpp"
-#include "share/grid/remap/refining_remapper_p2p.hpp"
-#include "share/io/eamxx_scorpio_interface.hpp"
+#include "share/remap/identity_remapper.hpp"
+#include "share/remap/horizontal_remapper.hpp"
+#include "share/scorpio_interface/eamxx_scorpio_interface.hpp"
 #include "share/util/eamxx_timing.hpp"
+
+#include <ekat_team_policy_utils.hpp>
 
 namespace scream {
 namespace marine_organics {
@@ -17,10 +19,7 @@ marineOrganicsFunctions<S, D>::create_horiz_remapper(
     const std::vector<std::string> &field_name, const std::string &dim_name1) {
   using namespace ShortFieldTagsNames;
 
-  scorpio::register_file(data_file, scorpio::Read);
   const int ncols_data = scorpio::get_dimlen(data_file, dim_name1);
-
-  scorpio::release_file(data_file);
 
   // Since shallow clones are cheap, we may as well do it (less lines of
   //  code)
@@ -46,7 +45,7 @@ marineOrganicsFunctions<S, D>::create_horiz_remapper(
                      "parameter list.");
 
     remapper =
-        std::make_shared<RefiningRemapperP2P>(horiz_interp_tgt_grid, map_file);
+        std::make_shared<HorizontalRemapper>(horiz_interp_tgt_grid, map_file);
   }
 
   const auto tgt_grid = remapper->get_tgt_grid();
@@ -76,7 +75,7 @@ marineOrganicsFunctions<S, D>::create_horiz_remapper(
 
 // -------------------------------------------------------------------------------------------
 template <typename S, typename D>
-std::shared_ptr<AtmosphereInput>
+std::shared_ptr<FieldReader>
 marineOrganicsFunctions<S, D>::create_data_reader(
     const std::shared_ptr<AbstractRemapper> &horiz_remapper,
     const std::string &data_file) {
@@ -85,13 +84,19 @@ marineOrganicsFunctions<S, D>::create_data_reader(
     io_fields.push_back(horiz_remapper->get_src_field(ifld));
   }
   const auto io_grid = horiz_remapper->get_src_grid();
-  return std::make_shared<AtmosphereInput>(data_file, io_grid, io_fields, true);
+  auto gids = io_grid->get_partitioned_dim_gids();
+  auto comm = io_grid->get_comm();
+  auto reader = std::make_shared<FieldReader>();
+  reader->set_file_specs(data_file);
+  reader->set_dim_decomp(gids, comm);
+  reader->set_fields(io_fields);
+  return reader;
 }  // create_data_reader
 
 // -------------------------------------------------------------------------------------------
 template <typename S, typename D>
 void marineOrganicsFunctions<S, D>::update_marine_organics_data_from_file(
-    std::shared_ptr<AtmosphereInput> &scorpio_reader, const util::TimeStamp &ts,
+    std::shared_ptr<FieldReader> &reader, const util::TimeStamp &ts,
     const int &time_index,  // zero-based
     AbstractRemapper &horiz_interp, marineOrganicsInput &marineOrganics_input) {
   start_timer("EAMxx::marineOrganics::update_marine_organics_data_from_file");
@@ -100,7 +105,7 @@ void marineOrganicsFunctions<S, D>::update_marine_organics_data_from_file(
   start_timer(
       "EAMxx::marineOrganics::update_marine_organics_data_from_file::read_"
       "data");
-  scorpio_reader->read_variables();
+  reader->read();
   stop_timer(
       "EAMxx::marineOrganics::update_marine_organics_data_from_file::read_"
       "data");
@@ -142,7 +147,7 @@ void marineOrganicsFunctions<S, D>::update_marine_organics_data_from_file(
 // -------------------------------------------------------------------------------------------
 template <typename S, typename D>
 void marineOrganicsFunctions<S, D>::update_marine_organics_timestate(
-    std::shared_ptr<AtmosphereInput> &scorpio_reader, const util::TimeStamp &ts,
+    std::shared_ptr<FieldReader> &reader, const util::TimeStamp &ts,
     AbstractRemapper &horiz_interp, marineOrganicsTimeState &time_state,
     marineOrganicsInput &beg, marineOrganicsInput &end) {
   // Now we check if we have to update the data that changes monthly
@@ -166,7 +171,7 @@ void marineOrganicsFunctions<S, D>::update_marine_organics_timestate(
     //       to be assigned.  A timestep greater than a month is very unlikely
     //       so we will proceed.
     int next_month = (time_state.current_month + 1) % 12;
-    update_marine_organics_data_from_file(scorpio_reader, ts, next_month,
+    update_marine_organics_data_from_file(reader, ts, next_month,
                                           horiz_interp, end);
   }
 
@@ -187,7 +192,7 @@ void marineOrganicsFunctions<S, D>::perform_time_interpolation(
     const marineOrganicsInput &data_beg, const marineOrganicsInput &data_end,
     const marineOrganicsOutput &data_out) {
   using ExeSpace = typename KT::ExeSpace;
-  using ESU      = ekat::ExeSpaceUtils<ExeSpace>;
+  using TPF      = ekat::TeamPolicyFactory<ExeSpace>;
 
   // Gather time stamp info
   auto &t_now   = time_state.t_now;
@@ -210,9 +215,7 @@ void marineOrganicsFunctions<S, D>::perform_time_interpolation(
 
   const int nsectors = data_beg.data.nsectors;
   const int ncols    = data_beg.data.ncols;
-  using ExeSpace     = typename KT::ExeSpace;
-  using ESU          = ekat::ExeSpaceUtils<ExeSpace>;
-  const auto policy  = ESU::get_default_team_policy(ncols, nsectors);
+  const auto policy  = TPF::get_default_team_policy(ncols, nsectors);
 
   Kokkos::parallel_for(
       policy, KOKKOS_LAMBDA(const MemberType &team) {
@@ -270,7 +273,7 @@ void marineOrganicsFunctions<S, D>::init_marine_organics_file_read(
     std::shared_ptr<AbstractRemapper> &marineOrganicsHorizInterp,
     marineOrganicsInput &data_start_, marineOrganicsInput &data_end_,
     marineOrganicsData &data_out_,
-    std::shared_ptr<AtmosphereInput> &marineOrganicsDataReader) {
+    std::shared_ptr<FieldReader> &marineOrganicsDataReader) {
   // Init horizontal remap
 
   marineOrganicsHorizInterp = create_horiz_remapper(
@@ -281,7 +284,7 @@ void marineOrganicsFunctions<S, D>::init_marine_organics_file_read(
   data_end_   = marineOrganicsInput(ncol, field_name.size());
   data_out_.init(ncol, field_name.size(), true);
 
-  // Create reader (an AtmosphereInput object)
+  // Create reader (an FieldReader object)
   marineOrganicsDataReader =
       create_data_reader(marineOrganicsHorizInterp, data_file);
 

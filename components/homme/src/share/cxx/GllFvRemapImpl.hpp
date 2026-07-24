@@ -36,8 +36,8 @@ struct GllFvRemapImpl {
   enum : int { np2 = NP*NP };
   enum : int { num_lev_pack = NUM_LEV };
   enum : int { max_num_lev_pack = NUM_LEV_P };
-  enum : int { num_lev_aligned = num_lev_pack*packn };
-  enum : int { num_levp_aligned = max_num_lev_pack*packn };
+  enum : int { num_lev_aligned = (int)num_lev_pack*(int)packn };
+  enum : int { num_levp_aligned = (int)max_num_lev_pack*(int)packn };
   enum : int { num_phys_lev = NUM_PHYSICAL_LEV };
 
   typedef GllFvRemap::Phys1T Phys1T;
@@ -114,7 +114,7 @@ struct GllFvRemapImpl {
                           const Phys2T& T, const Phys2T& omega, const Phys3T& uv,
                           const Phys3T& q, const Phys2T* dp);
   void run_fv_phys_to_dyn(const int time_idx, const CPhys2T& T, const CPhys3T& uv,
-                          const CPhys3T& q);
+                          const CPhys3T& q, const CPhys2T& Km, const CPhys2T& Kh);
   void run_fv_phys_to_dyn_dss();
 
   void remap_tracer_dyn_to_fv_phys(const int time_idx, const int nq,

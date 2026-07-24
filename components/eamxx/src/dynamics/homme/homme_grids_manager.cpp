@@ -1,40 +1,40 @@
 #include "dynamics/homme/homme_grids_manager.hpp"
+#include "dynamics/homme/homme_dynamics_helpers.hpp"
 #include "dynamics/homme/interface/eamxx_homme_interface.hpp"
 #include "dynamics/homme/physics_dynamics_remapper.hpp"
-#include "dynamics/homme/homme_dynamics_helpers.hpp"
 
-#include "share/util/eamxx_fv_phys_rrtmgp_active_gases_workaround.hpp"
+#include "share/algorithm/eamxx_fv_phys_rrtmgp_active_gases_workaround.hpp"
 
 #ifndef NDEBUG
-#include "share/property_checks/field_nan_check.hpp"
 #include "share/property_checks/field_lower_bound_check.hpp"
+#include "share/property_checks/field_nan_check.hpp"
 #include "share/property_checks/field_within_interval_check.hpp"
 #endif
 
-#include "share/io/scorpio_input.hpp"
-#include "share/grid/se_grid.hpp"
+#include "share/field/field_reader.hpp"
+#include "share/field/field_utils.hpp"
 #include "share/grid/point_grid.hpp"
-#include "share/grid/remap/inverse_remapper.hpp"
+#include "share/remap/inverse_remapper.hpp"
+#include "share/grid/se_grid.hpp"
+#include "share/physics/physics_constants.hpp"
 
 // Get all Homme's compile-time dims and constants
-#include "homme_dimensions.hpp"
 #include "PhysicalConstants.hpp"
+#include "homme_dimensions.hpp"
 
-#include "ekat/std_meta/ekat_std_utils.hpp"
+#include <ekat_std_utils.hpp>
 
 namespace scream
 {
 
-HommeGridsManager::
-HommeGridsManager (const ekat::Comm& comm,
-                   const ekat::ParameterList& p)
- : m_comm (comm)
- , m_params(p)
+HommeGridsManager::HommeGridsManager(const ekat::Comm &comm, const ekat::ParameterList &p)
+ : m_comm(comm),
+   m_params(p)
 {
   if (!is_parallel_inited_f90()) {
     // While we're here, we can init homme's parallel session
     auto fcomm = MPI_Comm_c2f(comm.mpi_comm());
-    init_parallel_f90 (fcomm);
+    init_parallel_f90(fcomm);
   }
 
   // This class needs Homme's context, so register as a user
@@ -43,25 +43,26 @@ HommeGridsManager (const ekat::Comm& comm,
   if (!is_params_inited_f90()) {
     // While we're here, we can init homme's parameters
     auto nlname = m_params.get<std::string>("dynamics_namelist_file_name").c_str();
-    init_params_f90 (nlname);
+    init_params_f90(nlname);
   }
 
   // Create the grid integer codes map (i.e., int->string
-  build_pg_codes ();
+  build_pg_codes();
 }
 
-HommeGridsManager::
-~HommeGridsManager () {
+HommeGridsManager::~HommeGridsManager()
+{
   // Cleanup the grids stuff
-  finalize_geometry_f90 ();
+  finalize_geometry_f90();
 
   // This class is done with Homme. Remove from its users list
   HommeContextUser::singleton().remove_user();
 }
 
 HommeGridsManager::remapper_ptr_type
-HommeGridsManager::do_create_remapper (const grid_ptr_type from_grid,
-                                       const grid_ptr_type to_grid) const {
+HommeGridsManager::do_create_remapper(const grid_ptr_type from_grid,
+                                      const grid_ptr_type to_grid) const
+{
   const auto from = from_grid->name();
   const auto to   = to_grid->name();
 
@@ -83,7 +84,7 @@ HommeGridsManager::do_create_remapper (const grid_ptr_type from_grid,
       return std::make_shared<InverseRemapper>(pd_remapper);
     }
   } else {
-    ekat::error::runtime_abort("Error! P-D remapping only implemented for 'physics_gll' phys grid.\n");
+    EKAT_ERROR_MSG("Error! P-D remapping only implemented for 'physics_gll' phys grid.\n");
   }
   return nullptr;
 }
@@ -118,6 +119,13 @@ build_grids ()
   // Also the GLL grid with no rebalance is needed for sure
   build_physics_grid("gll","none");
 
+  // Set the physics_gll grid as io_aux_grid in the dyn grid
+  auto physics_gll_grid = get_grid_nonconst("physics_gll");
+  auto dyn_grid = get_grid_nonconst("dynamics");
+  dyn_grid->set_aux_grid("default",physics_gll_grid);
+  dyn_grid->set_aux_grid("cg",physics_gll_grid);
+  dyn_grid->set_aux_grid("dg",dyn_grid);
+
   // If (pg type,rebalance) is (gll,none), this will be a no op
   build_physics_grid(pg_type,pg_rebalance);
 
@@ -147,10 +155,8 @@ void HommeGridsManager::build_dynamics_grid () {
   const int nlev   = get_nlev_f90();
 
   auto dyn_grid = std::make_shared<SEGrid>("dynamics",nlelem,HOMMEXX_NP,nlev,m_comm);
-  dyn_grid->setSelfPointer(dyn_grid);
 
   const auto layout2d = dyn_grid->get_2d_scalar_layout();
-  const Units rad (Units::nondimensional(),"rad");
 
   // Filling the cg/dg gids, elgpgp, coords, lat/lon views
   auto dg_dofs = dyn_grid->get_dofs_gids();
@@ -187,12 +193,13 @@ void HommeGridsManager::build_dynamics_grid () {
 
   initialize_vertical_coordinates(dyn_grid);
 
-  dyn_grid->m_short_name = "dyn";
+  dyn_grid->m_disambiguation_suffix = "_d";
   add_nonconst_grid(dyn_grid);
 }
 
 void HommeGridsManager::
-build_physics_grid (const ci_string& type, const ci_string& rebalance) {
+build_physics_grid (const ci_string& type, const ci_string& rebalance)
+{
   std::string name = "physics_" + type;
   if (rebalance != "none") {
     name += " " + rebalance;
@@ -215,18 +222,18 @@ build_physics_grid (const ci_string& type, const ci_string& rebalance) {
   const int nlcols = get_num_local_columns_f90 (pg_code % 10);
 
   auto phys_grid = std::make_shared<PointGrid>(name,nlcols,nlev,m_comm);
-  phys_grid->setSelfPointer(phys_grid);
 
   // Create the gids, coords, area views
   using namespace ShortFieldTagsNames;
   using namespace ekat::units;
   const auto layout2d = phys_grid->get_2d_scalar_layout();
-  const Units rad (Units::nondimensional(),"rad");
 
+  auto degN = none.rename("degrees_north");
+  auto degE = none.rename("degrees_east");
   auto dofs = phys_grid->get_dofs_gids();
-  auto lat  = phys_grid->create_geometry_data("lat",layout2d,rad);
-  auto lon  = phys_grid->create_geometry_data("lon",layout2d,rad);
-  auto area = phys_grid->create_geometry_data("area",layout2d,rad*rad);
+  auto lat  = phys_grid->create_geometry_data("lat",layout2d,degN);
+  auto lon  = phys_grid->create_geometry_data("lon",layout2d,degE);
+  auto area = phys_grid->create_geometry_data("area",layout2d,sr);
 
   using gid_type = AbstractGrid::gid_type;
 
@@ -260,28 +267,35 @@ build_physics_grid (const ci_string& type, const ci_string& rebalance) {
   // If one of the hybrid vcoord arrays is there, they all are
   // NOTE: we may have none in some unit tests that don't need them (e.g. pd remap)
   if (get_grid("dynamics")->has_geometry_data("hyam")) {
-    auto layout_mid = phys_grid->get_vertical_layout(true);
-    auto layout_int = phys_grid->get_vertical_layout(false);
-    using namespace ekat::units;
-    Units nondim = Units::nondimensional();
-    Units mbar(bar/1000,"mb");
+    auto layout_mid = phys_grid->get_vertical_layout(LEV);
+    auto layout_int = phys_grid->get_vertical_layout(ILEV);
+    auto mbar = (bar/1000).rename("mb");
 
-    auto hyai = phys_grid->create_geometry_data("hyai",layout_int,nondim);
-    auto hybi = phys_grid->create_geometry_data("hybi",layout_int,nondim);
-    auto hyam = phys_grid->create_geometry_data("hyam",layout_mid,nondim);
-    auto hybm = phys_grid->create_geometry_data("hybm",layout_mid,nondim);
+    auto hyai = phys_grid->create_geometry_data("hyai",layout_int,none);
+    auto hybi = phys_grid->create_geometry_data("hybi",layout_int,none);
+    auto hyam = phys_grid->create_geometry_data("hyam",layout_mid,none);
+    auto hybm = phys_grid->create_geometry_data("hybm",layout_mid,none);
     auto lev  = phys_grid->create_geometry_data("lev", layout_mid,mbar);
     auto ilev = phys_grid->create_geometry_data("ilev",layout_int,mbar);
+    auto P0   = phys_grid->create_geometry_data("P0", FieldLayout::scalar(), Pa);
+    const auto p0_val = physics::Constants<Real>::P0.value;
+    P0.deep_copy(p0_val);
 
     for (auto f : {hyai, hybi, hyam, hybm}) {
       auto f_d = get_grid("dynamics")->get_geometry_data(f.name());
       f.deep_copy(f_d);
       f.sync_to_host();
     }
-  
+
+    using stratts_t = std::map<std::string,std::string>;
+    auto& lev_io_atts  = lev.get_header().get_extra_data<stratts_t>("io: string attributes");
+    auto& ilev_io_atts = ilev.get_header().get_extra_data<stratts_t>("io: string attributes");
+    lev_io_atts["formula_terms"] = "a: hyam b: hybm p0: P0 ps: ps" ;
+    ilev_io_atts["formula_terms"] = "a: hyai b: hybi p0: P0 ps: ps" ;
+    lev_io_atts["positive"] = "down";
+    ilev_io_atts["positive"] = "down";
+
     // Build lev from hyam and hybm
-    const Real ps0        = 100000.0;
-  
     auto hyam_v = hyam.get_view<const Real*,Host>();
     auto hybm_v = hybm.get_view<const Real*,Host>();
     auto hyai_v = hyai.get_view<const Real*,Host>();
@@ -290,10 +304,10 @@ build_physics_grid (const ci_string& type, const ci_string& rebalance) {
     auto ilev_v = ilev.get_view<Real*,Host>();
     auto num_v_levs = phys_grid->get_num_vertical_levels();
     for (int ii=0;ii<num_v_levs;ii++) {
-      lev_v(ii)  = 0.01*ps0*(hyam_v(ii)+hybm_v(ii));
-      ilev_v(ii) = 0.01*ps0*(hyai_v(ii)+hybi_v(ii));
+      lev_v(ii)  = 0.01*p0_val*(hyam_v(ii)+hybm_v(ii));
+      ilev_v(ii) = 0.01*p0_val*(hyai_v(ii)+hybi_v(ii));
     }
-    ilev_v(num_v_levs) = 0.01*ps0*(hyai_v(num_v_levs)+hybi_v(num_v_levs));
+    ilev_v(num_v_levs) = 0.01*p0_val*(hyai_v(num_v_levs)+hybi_v(num_v_levs));
     lev.sync_to_dev();
     ilev.sync_to_dev();
   }
@@ -306,14 +320,12 @@ build_physics_grid (const ci_string& type, const ci_string& rebalance) {
     dx_short_f.sync_to_dev();
   }
 
-  phys_grid->m_short_name = type;
+  phys_grid->m_disambiguation_suffix = type;
   add_nonconst_grid(phys_grid);
 }
 
 void HommeGridsManager::
 initialize_vertical_coordinates (const nonconstgrid_ptr_type& dyn_grid) {
-  using view_1d_host = AtmosphereInput::view_1d_host;
-  using vos_t = std::vector<std::string>;
   using namespace ShortFieldTagsNames;
 
   // If we put vcoords in the IC file, we open the ic file, whose name
@@ -329,53 +341,25 @@ initialize_vertical_coordinates (const nonconstgrid_ptr_type& dyn_grid) {
     filename =  m_params.get<std::string>("ic_filename");
   }
 
-  // Read vcoords into host views
-  ekat::ParameterList vcoord_reader_pl;
-  vcoord_reader_pl.set("filename",filename);
-  vcoord_reader_pl.set<vos_t>("field_names",{"hyai","hybi","hyam","hybm"});
+  // Create vcoords fields
+  auto layout_mid = dyn_grid->get_vertical_layout(LEV);
+  auto layout_int = dyn_grid->get_vertical_layout(ILEV);
 
-  auto layout_mid = dyn_grid->get_vertical_layout(true);
-  auto layout_int = dyn_grid->get_vertical_layout(false);
-  constexpr auto nondim = ekat::units::Units::nondimensional();
+  auto hyai = dyn_grid->create_geometry_data("hyai",layout_int,ekat::units::none);
+  auto hybi = dyn_grid->create_geometry_data("hybi",layout_int,ekat::units::none);
+  auto hyam = dyn_grid->create_geometry_data("hyam",layout_mid,ekat::units::none);
+  auto hybm = dyn_grid->create_geometry_data("hybm",layout_mid,ekat::units::none);
 
-  auto hyai = dyn_grid->create_geometry_data("hyai",layout_int,nondim);
-  auto hybi = dyn_grid->create_geometry_data("hybi",layout_int,nondim);
-  auto hyam = dyn_grid->create_geometry_data("hyam",layout_mid,nondim);
-  auto hybm = dyn_grid->create_geometry_data("hybm",layout_mid,nondim);
-
-  std::map<std::string,view_1d_host> host_views = {
-    { "hyai", hyai.get_view<Real*,Host>() },
-    { "hybi", hybi.get_view<Real*,Host>() },
-    { "hyam", hyam.get_view<Real*,Host>() },
-    { "hybm", hybm.get_view<Real*,Host>() }
-  };
-  std::map<std::string,FieldLayout> layouts = {
-    { "hyai", layout_int },
-    { "hybi", layout_int },
-    { "hyam", layout_mid },
-    { "hybm", layout_mid }
-  };
-
-  AtmosphereInput vcoord_reader(vcoord_reader_pl,dyn_grid,host_views,layouts);
-  vcoord_reader.read_variables();
-  vcoord_reader.finalize();
-
-  // Sync to device
-  hyai.sync_to_dev();
-  hybi.sync_to_dev();
-  hyam.sync_to_dev();
-  hybm.sync_to_dev();
-
-  // Pass host views data to hvcoord init function
-  const auto ps0 = Homme::PhysicalConstants::p0;
+  read_fields(filename,{hyai, hybi, hyam, hybm});
 
   // Set vcoords in f90
   // NOTE: homme does the check for these arrays, so no need to do any property check here
+  const auto ps0 = Homme::PhysicalConstants::p0;
   prim_set_hvcoords_f90 (ps0,
-                         host_views["hyai"].data(),
-                         host_views["hybi"].data(),
-                         host_views["hyam"].data(),
-                         host_views["hybm"].data());
+                         hyai.get_internal_view_data<Real,Host>(),
+                         hybi.get_internal_view_data<Real,Host>(),
+                         hyam.get_internal_view_data<Real,Host>(),
+                         hybm.get_internal_view_data<Real,Host>());
 }
 
 void HommeGridsManager::

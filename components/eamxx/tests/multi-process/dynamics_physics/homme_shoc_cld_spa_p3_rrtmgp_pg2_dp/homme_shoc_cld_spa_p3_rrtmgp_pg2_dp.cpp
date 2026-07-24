@@ -8,14 +8,15 @@
 
 // Physics includes
 #include "physics/register_physics.hpp"
-#include "diagnostics/register_diagnostics.hpp"
+#include "share/diagnostics/register_diagnostics.hpp"
 
 // Surface coupling includes
 #include "control/register_surface_coupling.hpp"
 #include "control/atmosphere_surface_coupling_importer.hpp"
 
 // EKAT headers
-#include "ekat/kokkos/ekat_kokkos_types.hpp"
+#include <ekat_kokkos_types.hpp>
+#include <ekat_yaml.hpp>
 
 TEST_CASE("scream_homme_physics", "scream_homme_physics") {
   using namespace scream;
@@ -47,7 +48,7 @@ TEST_CASE("scream_homme_physics", "scream_homme_physics") {
   AtmosphereDriver ad;
 
   // Init, run, and finalize
-  // NOTE: Kokkos is finalize in ekat_catch_main.cpp, and YAKL is finalized
+  // NOTE: Kokkos is finalize in ekat_catch_main.cpp, and Kokkos is finalized
   //       during RRTMGPRatiation::finalize_impl, after RRTMGP has deallocated
   //       all its arrays.
   ad.set_comm(atm_comm);
@@ -83,8 +84,9 @@ TEST_CASE("scream_homme_physics", "scream_homme_physics") {
                                          4, 4, ncols, import_data.data(), import_names[0], import_cpl_indices.data(),
                                          import_vec_comps.data(), import_constant_multiple.data(), do_import_during_init.data());
   ad.initialize_fields ();
-  ad.initialize_output_managers ();
   ad.initialize_atm_procs ();
+  ad.reset_accumulated_fields();
+  ad.initialize_output_managers ();
 
   if (atm_comm.am_i_root()) {
     printf("Start time stepping loop...       [  0%%]\n");

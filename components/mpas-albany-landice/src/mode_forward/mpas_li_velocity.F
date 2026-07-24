@@ -222,7 +222,7 @@ contains
 !>  This routine calls velocity solvers.
 !
 !-----------------------------------------------------------------------
-   subroutine li_velocity_solve(domain, solveVelo, err)
+   subroutine li_velocity_solve(domain, solveVelo, updateMask, err)
 
       use mpas_vector_reconstruction
       use li_mask
@@ -236,6 +236,8 @@ contains
       !< velocity should be solved, or if an existing solution should be
       !< used to calculate the diagnostic fields related to velocty
       !< (e.g. on a restart)
+      logical, intent(in) :: updateMask !< Input: update mask before
+      !< velocity solve only if outside of RK loop.
 
       !-----------------------------------------------------------------
       ! input/output variables
@@ -326,14 +328,15 @@ contains
       call mpas_dmpar_field_halo_exch(domain, 'thickness')
       call mpas_timer_stop("halo updates")
 
-      ! Update mask just to be safe (might be redundant)
       block => domain % blocklist
       do while (associated(block))
          call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
          call mpas_pool_get_subpool(block % structs, 'velocity', velocityPool)
          call mpas_pool_get_subpool(block % structs, 'geometry', geometryPool)
-
-         call li_calculate_mask(meshPool, velocityPool, geometryPool, err_tmp)
+         ! Only update mask outside of RK loop
+         if ( updateMask ) then
+             call li_calculate_mask(meshPool, velocityPool, geometryPool, err_tmp)
+         endif
          call li_update_geometry(geometryPool)
 
          block => block % next
@@ -659,7 +662,7 @@ contains
          ! ---
          ! --- Calculate strain rates on cell centers
          ! ---
-         call calculate_strain_rates_and_stresses(meshPool, geometryPool, thermalPool, scratchPool, velocityPool, err)
+         call calculate_strain_rates_and_stresses(meshPool, geometryPool, thermalPool, scratchPool, velocityPool, err_tmp)
          err = ior(err, err_tmp)
 
          block => block % next
@@ -905,6 +908,7 @@ contains
       real(kind=RKIND), pointer :: config_flowLawExponent
 
       real (kind=RKIND), dimension(:), pointer :: thickness
+      real (kind=RKIND), dimension(:), pointer :: layerThicknessFractions
       real (kind=RKIND), dimension(:,:), pointer :: temperature
       real (kind=RKIND), dimension(:,:), pointer :: flowParamA
       real (kind=RKIND), dimension(:), pointer :: effectiveViscosity
@@ -929,6 +933,8 @@ contains
 
       call mpas_pool_get_dimension(meshPool, 'nVertLevels', nVertLevels)
       call mpas_pool_get_dimension(meshPool, 'nCells', nCells)
+
+      call mpas_pool_get_array(meshPool, 'layerThicknessFractions', layerThicknessFractions)
 
       call mpas_pool_get_array(velocityPool, 'exx', exx)
       call mpas_pool_get_array(velocityPool, 'eyy', eyy)
@@ -976,11 +982,13 @@ contains
       err = ior(err, err_tmp)
 
       ! calculate the depth-averaged flow parameter A
-      meanFlowParamA(:) = sum(flowParamA(:,:), dim=1)/REAL(nVertLevels, kind=RKIND)
+      do iCell = 1, nCells
+         meanFlowParamA(iCell) = sum(flowParamA(:,iCell) * layerThicknessFractions(:))
+      enddo
 
       ! calculate effective viscosity from strain rate and flow param.
       do iCell = 1, nCells
-         eEff = sqrt(exx(iCell)**2 + eyy(iCell)**2 + exx(iCell)*eyy(iCell) + exy(iCell)**2) ! effective strain rate
+         eEff = sqrt(0.5_RKIND * (eMax(iCell)**2.0_RKIND + eMin(iCell)**2.0_RKIND ))
          if ( (eEff == 0.0_RKIND) .or. (meanFlowParamA(iCell) == 0.0_RKIND) ) then
             effectiveViscosity(iCell) = 0.0_RKIND
          else

@@ -3,15 +3,17 @@
 #include "control/atmosphere_driver.hpp"
 #include "control/atmosphere_surface_coupling_importer.hpp"
 #include "control/atmosphere_surface_coupling_exporter.hpp"
-#include "diagnostics/register_diagnostics.hpp"
-#include "share/grid/mesh_free_grids_manager.hpp"
-#include "share/field/field_manager.hpp"
+#include "share/diagnostics/register_diagnostics.hpp"
+#include "share/physics/eamxx_common_physics_functions.hpp"
+#include "share/data_managers/mesh_free_grids_manager.hpp"
+#include "share/data_managers/field_manager.hpp"
 #include "share/atm_process/atmosphere_process.hpp"
-#include "share/eamxx_types.hpp"
-#include "share/util/eamxx_setup_random_test.hpp"
+#include "share/core/eamxx_setup_random_test.hpp"
+#include "share/core/eamxx_types.hpp"
 
-#include <ekat/ekat_parse_yaml_file.hpp>
-#include <ekat/util/ekat_test_utils.hpp>
+#include <ekat_yaml.hpp>
+#include <ekat_view_utils.hpp>
+#include <ekat_team_policy_utils.hpp>
 
 #include <iomanip>
 
@@ -20,7 +22,6 @@ namespace scream {
 using vos_type = std::vector<std::string>;
 using vor_type = std::vector<Real>;
 constexpr Real test_tol = std::numeric_limits<Real>::epsilon()*1e4;
-constexpr Real FillValue = -99999.0;
 
 // Test function for prescribed values
 Real test_func(const int col, const int t) {
@@ -61,7 +62,6 @@ std::vector<std::string> create_from_file_test_data(const ekat::Comm& comm, cons
   auto gm = create_mesh_free_grids_manager(comm,gm_params);
   gm->build_grids();
   // Create a fields manager on the fly with the appropriate fields and grid.
-  using namespace ekat::units;
   using namespace ShortFieldTagsNames;
   const auto grid = gm->get_grid("physics");
   const int nlcols = grid->get_num_local_dofs();
@@ -69,7 +69,7 @@ std::vector<std::string> create_from_file_test_data(const ekat::Comm& comm, cons
   std::vector<std::string> fnames = {"lwdn"};
   FieldLayout layout({COL},{nlcols});
   auto fm = std::make_shared<FieldManager>(grid,RepoState::Closed);
-  auto nondim = Units::nondimensional();
+  auto nondim = ekat::units::none;
   for (auto name : fnames) {
     FieldIdentifier fid(name,layout,nondim,grid->name());
     Field f(fid);
@@ -91,8 +91,6 @@ std::vector<std::string> create_from_file_test_data(const ekat::Comm& comm, cons
   om_pl.set("filename_prefix",std::string("surface_coupling_forcing"));
   om_pl.set("field_names",fnames);
   om_pl.set("averaging_type", std::string("INSTANT"));
-  om_pl.set("max_snapshots_per_file",2);
-  om_pl.set<double>("fill_value",FillValue);
   auto& ctrl_pl = om_pl.sublist("output_control");
   ctrl_pl.set("frequency_units",std::string("nsteps"));
   ctrl_pl.set("frequency",1);
@@ -206,6 +204,9 @@ void setup_import_and_export_data(
   do_export_during_init_view(6) = true;
   do_export_during_init_view(7) = true;
   do_export_during_init_view(8) = true;
+  do_export_during_init_view(17) = true;
+  do_export_during_init_view(18) = true;
+  do_export_during_init_view(19) = true;
 }
 
 void test_imports(const FieldManager& fm,
@@ -260,24 +261,24 @@ void test_imports(const FieldManager& fm,
 
     // The following are only imported during run phase. If this test is called
     // during initialization, all values should be the default value.
-    // TODO: Why are some of these FillValue and others are 0.0?  For the former,
-    // they are gathered from output it seems, so they take the FillValue.  While
-    // the few ones with 0.0 seem to take there initial value from the field initialization
-    // which is 0.0 I believe.  Still, based on the comment none of these should be read in
-    // yet right?
     if (called_directly_after_init) {
-      EKAT_REQUIRE(sfc_alb_dir_vis(i)  == FillValue);
-      EKAT_REQUIRE(sfc_alb_dir_nir(i)  == FillValue);
-      EKAT_REQUIRE(sfc_alb_dif_vis(i)  == FillValue);
-      EKAT_REQUIRE(sfc_alb_dif_nir(i)  == FillValue);
+      // Right now, FieldManager allocates fields without setting a special value
+      // for uninitialized, so it just gets whatever is the default allocation.
+      // If we change what the FM does, we need to change this value.
+      const Real UninitedValue = 0.0;
+
+      EKAT_REQUIRE(sfc_alb_dir_vis(i)  == UninitedValue);
+      EKAT_REQUIRE(sfc_alb_dir_nir(i)  == UninitedValue);
+      EKAT_REQUIRE(sfc_alb_dif_vis(i)  == UninitedValue);
+      EKAT_REQUIRE(sfc_alb_dif_nir(i)  == UninitedValue);
       EKAT_REQUIRE(surf_radiative_T(i) == 0.0);
       EKAT_REQUIRE(T_2m(i)             == 0.0);
       EKAT_REQUIRE(qv_2m(i)            == 0.0);
       EKAT_REQUIRE(wind_speed_10m(i)   == 0.0);
       EKAT_REQUIRE(snow_depth_land(i)  == 0.0);
-      EKAT_REQUIRE(surf_lw_flux_up(i)  == FillValue);
-      EKAT_REQUIRE(ocnfrac(i)          == FillValue);
-      EKAT_REQUIRE(landfrac(i)         == FillValue);
+      EKAT_REQUIRE(surf_lw_flux_up(i)  == UninitedValue);
+      EKAT_REQUIRE(ocnfrac(i)          == UninitedValue);
+      EKAT_REQUIRE(landfrac(i)         == UninitedValue);
     } else {
       EKAT_REQUIRE(sfc_alb_dir_vis(i)  == import_constant_multiple_view(0 )*import_data_view(i, import_cpl_indices_view(0)));
       EKAT_REQUIRE(sfc_alb_dir_nir(i)  == import_constant_multiple_view(1 )*import_data_view(i, import_cpl_indices_view(1)));
@@ -303,8 +304,10 @@ void test_exports(const FieldManager& fm,
                   const int dt,
                   const bool called_directly_after_init = false)
 {
-  using PF = PhysicsFunctions<DefaultDevice>;
-  using PC = physics::Constants<Real>;
+  using PF       = PhysicsFunctions<DefaultDevice>;
+  using PC       = physics::Constants<Real>;
+  using ExeSpace = typename KokkosTypes<DefaultDevice>::ExeSpace;
+  using TPF      = ekat::TeamPolicyFactory<ExeSpace>;
 
   // Some computed fields rely on calculations that are done in the AD.
   // Recompute here and verify that they were exported correctly.
@@ -316,6 +319,10 @@ void test_exports(const FieldManager& fm,
   const auto phis                 = fm.get_field("phis").get_view<const Real*>();
   const auto precip_liq_surf_mass = fm.get_field("precip_liq_surf_mass").get_view<const Real*>();
   const auto precip_ice_surf_mass = fm.get_field("precip_ice_surf_mass").get_view<const Real*>();
+  const auto surf_mom_flux        = fm.get_field("surf_mom_flux").get_view<const Real**>();
+  const auto um_pert_diff         = fm.get_field("um_pert_diff").get_view<const Real**>();
+  const auto vm_pert_diff         = fm.get_field("vm_pert_diff").get_view<const Real**>();
+  const auto tke                  = fm.get_field("tke").get_view<const Real**>();
 
   const int ncols = fm.get_grid()->get_num_local_dofs();
   const int nlevs = fm.get_grid()->get_num_vertical_levels();
@@ -330,9 +337,11 @@ void test_exports(const FieldManager& fm,
   KokkosTypes<DefaultDevice>::view_1d<Real> Sa_pslv   ("Sa_pslv",    ncols);
   KokkosTypes<DefaultDevice>::view_1d<Real> Faxa_rainl("Faxa_rainl", ncols);
   KokkosTypes<DefaultDevice>::view_1d<Real> Faxa_snowl("Faxa_snowl", ncols);
+  KokkosTypes<DefaultDevice>::view_1d<Real> Sa_wsresp ("Sa_wsresp",  ncols);
+  KokkosTypes<DefaultDevice>::view_1d<Real> Sa_tau_est("Sa_tau_est", ncols);
+  KokkosTypes<DefaultDevice>::view_1d<Real> Sa_ugust  ("Sa_ugust",   ncols);
 
-  const auto setup_policy =
-      ekat::ExeSpaceUtils<KokkosTypes<DefaultDevice>::ExeSpace>::get_thread_range_parallel_scan_team_policy(ncols, nlevs);
+  const auto setup_policy = TPF::get_thread_range_parallel_scan_team_policy(ncols, nlevs);
   Kokkos::parallel_for(setup_policy, KOKKOS_LAMBDA(const Kokkos::TeamPolicy<KokkosTypes<DefaultDevice>::ExeSpace>::member_type& team) {
     const int i = team.league_rank();
 
@@ -344,6 +353,10 @@ void test_exports(const FieldManager& fm,
     const auto dz_i              = ekat::subview(dz,             i);
     const auto z_int_i           = ekat::subview(z_int,          i);
     const auto z_mid_i           = ekat::subview(z_mid,          i);
+    const auto surf_mom_flux_i   = ekat::subview(surf_mom_flux,  i);
+    const auto um_pert_diff_i    = ekat::subview(um_pert_diff,   i);
+    const auto vm_pert_diff_i    = ekat::subview(vm_pert_diff,   i);
+    const auto tke_i             = ekat::subview(tke,            i);
 
     // Compute vertical layer thickness
     PF::calculate_dz(team, pseudo_density_i, p_mid_i, T_mid_i, qv_i, dz_i);
@@ -361,14 +374,25 @@ void test_exports(const FieldManager& fm,
     const Real T_int_bot = PF::calculate_surface_air_T(T_mid_i(nlevs-1),z_mid_i(nlevs-1));
 
     Sa_z(i)       = z_mid_i(nlevs-1);
-    Sa_ptem(i)    = PF::calculate_theta_from_T(T_mid_i(nlevs-1), p_mid_i(nlevs-1));
     Sa_dens(i)    = PF::calculate_density(pseudo_density_i(nlevs-1), dz_i(nlevs-1));
     Sa_pslv(i)    = PF::calculate_psl(T_int_bot, p_int_i(nlevs), phis(i));
 
+    // WARNING - THE FOLLOWING IS A HACK
+    // To make the flux calculations within the component coupler consistent with EAM we need to
+    // provide theta based on an exner function that evaluates to 1 at the bottom interface.
+    // To accomplish this we calculate a theta that replaces the reference pressure (P0) for exner
+    // with the pressure of the lowest interface level => p_int_i(nlevs)
+    Sa_ptem(i) = T_mid_i(nlevs-1) / pow( p_mid_i(nlevs-1)/p_int_i(nlevs), PC::RD.value*PC::INV_CP.value);
+
     if (not called_directly_after_init) {
-      Faxa_rainl(i) = precip_liq_surf_mass(i)/dt*(1000.0/PC::RHO_H2O);
-      Faxa_snowl(i) = precip_ice_surf_mass(i)/dt*(1000.0/PC::RHO_H2O);
+      Faxa_rainl(i) = precip_liq_surf_mass(i)/dt*(1000.0/PC::RHO_H2O.value);
+      Faxa_snowl(i) = precip_ice_surf_mass(i)/dt*(1000.0/PC::RHO_H2O.value);
     }
+
+    Sa_wsresp(i) = PF::calculate_wind_speed_sensitivity(surf_mom_flux_i(0), surf_mom_flux_i(1),
+                                                        um_pert_diff_i(nlevs-1), vm_pert_diff_i(nlevs-1));
+    Sa_wsresp(i) = ekat::impl::min(Sa_wsresp(i), dt * PC::gravit.value / pseudo_density_i(nlevs-1));
+    Sa_ugust(i) = PF::calculate_gustiness_speed(tke_i(nlevs-1));
   });
 
   // Sync to host for comparing to export data
@@ -382,6 +406,7 @@ void test_exports(const FieldManager& fm,
   fm.get_field("sfc_flux_dif_vis").sync_to_host();
   fm.get_field("sfc_flux_sw_net" ).sync_to_host();
   fm.get_field("sfc_flux_lw_dn"  ).sync_to_host();
+  fm.get_field("tau_est"         ).sync_to_host();
   const auto p_mid_h            = fm.get_field("p_mid"           ).get_view<const Real**,  Host>();
   const auto T_mid_h            = fm.get_field("T_mid"           ).get_view<const Real**,  Host>();
   const auto qv_h               = fm.get_field("qv"              ).get_view<const Real**,  Host>();
@@ -392,12 +417,15 @@ void test_exports(const FieldManager& fm,
   const auto sfc_flux_dif_vis_h = fm.get_field("sfc_flux_dif_vis").get_view<const Real*,   Host>();
   const auto sfc_flux_sw_net_h  = fm.get_field("sfc_flux_sw_net" ).get_view<const Real*,   Host>();
   const auto sfc_flux_lw_dn_h   = fm.get_field("sfc_flux_lw_dn"  ).get_view<const Real*,   Host>();
+  const auto tau_est_h          = fm.get_field("tau_est"         ).get_view<const Real*,   Host>();
   const auto Sa_z_h       = Kokkos::create_mirror_view_and_copy(HostDevice(), Sa_z);
   const auto Sa_ptem_h    = Kokkos::create_mirror_view_and_copy(HostDevice(), Sa_ptem);
   const auto Sa_dens_h    = Kokkos::create_mirror_view_and_copy(HostDevice(), Sa_dens);
   const auto Sa_pslv_h    = Kokkos::create_mirror_view_and_copy(HostDevice(), Sa_pslv);
   const auto Faxa_rainl_h = Kokkos::create_mirror_view_and_copy(HostDevice(), Faxa_rainl);
   const auto Faxa_snowl_h = Kokkos::create_mirror_view_and_copy(HostDevice(), Faxa_snowl);
+  const auto Sa_wsresp_h  = Kokkos::create_mirror_view_and_copy(HostDevice(), Sa_wsresp);
+  const auto Sa_ugust_h   = Kokkos::create_mirror_view_and_copy(HostDevice(), Sa_ugust);
 
   // Recall that two fields have been set to export to a constant value, so we load those constants from the parameter list here:
   using vor_type = std::vector<Real>;
@@ -442,6 +470,9 @@ void test_exports(const FieldManager& fm,
       EKAT_REQUIRE(export_constant_multiple_view(15)*sfc_flux_sw_net_h(i)  == export_data_view(i, export_cpl_indices_view(15)));
       EKAT_REQUIRE(std::abs(Faxa_lwdn_file - export_data_view(i, export_cpl_indices_view(16)))<test_tol);
     }
+    EKAT_REQUIRE(export_constant_multiple_view(17)*Sa_wsresp_h(i) == export_data_view(i, export_cpl_indices_view(17)));
+    EKAT_REQUIRE(export_constant_multiple_view(18)*tau_est_h(i)   == export_data_view(i, export_cpl_indices_view(18)));
+    EKAT_REQUIRE(export_constant_multiple_view(19)*Sa_ugust_h(i)  == export_data_view(i, export_cpl_indices_view(19)));
   }
 }
 
@@ -456,7 +487,7 @@ TEST_CASE("surface-coupling", "") {
   // Load ad parameter list
   std::string fname = "input.yaml";
   ekat::ParameterList ad_params("Atmosphere Driver");
-  parse_yaml_file(fname,ad_params);
+  ekat::parse_yaml_file(fname,ad_params);
 
   // Parameters
   auto& ts          = ad_params.sublist("time_stepping");
@@ -471,7 +502,7 @@ TEST_CASE("surface-coupling", "") {
   // This requires us to add a sublist to the parsed AD params yaml list.
   std::uniform_real_distribution<Real> pdf_real_constant_data(0.0,1.0);
 
-  auto& ap_params     = ad_params.sublist("atmosphere_processes");
+  auto& ap_params     = ad_params.sublist("eamxx");
   auto& sc_exp_params = ap_params.sublist("surface_coupling_exporter");
   // Set up forcing to a constant value
   const Real Faxa_swndf_const = pdf_real_constant_data(engine);
@@ -523,7 +554,7 @@ TEST_CASE("surface-coupling", "") {
   // cpl fields (in addition to the required scream imports/exports), then assign a random, non-repeating
   // cpl index for each field in [0, num_cpl_fields).
   const int num_scream_imports = 16;
-  const int num_scream_exports = 17;
+  const int num_scream_exports = 20;
   KokkosTypes<HostDevice>::view_1d<int> additional_import_exports("additional_import_exports", 2);
   ekat::genRandArray(additional_import_exports, engine, pdf_int_additional_fields);
   atm_comm.broadcast(additional_import_exports.data(),2,0);
@@ -596,6 +627,9 @@ TEST_CASE("surface-coupling", "") {
   std::strcpy(export_names[14], "Faxa_swvdf" );
   std::strcpy(export_names[15], "Faxa_swnet" );
   std::strcpy(export_names[16], "Faxa_lwdn"  );
+  std::strcpy(export_names[17], "Sa_wsresp"  );
+  std::strcpy(export_names[18], "Sa_tau_est" );
+  std::strcpy(export_names[19], "Sa_ugust"   );
 
   // Setup the import/export data. This is meant to replicate the structures coming
   // from mct_coupling/eamxx_cpl_indices.F90

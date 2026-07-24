@@ -69,11 +69,22 @@ ENDIF ()
 IF (${HOMME_SUBMISSION_TYPE} STREQUAL none) 
   SET(HOMME_QUEUING FALSE)
   IF (USE_NUM_PROCS)
-    MESSAGE(STATUS "Using ${USE_NUM_PROCS} processors")
+    # USE_NUM_PROCS is the number of ranks CIME has allocated (e.g. from a
+    # _P96 test option).  Treat it as the cap: each test uses as many ranks
+    # as it needs, but no more than USE_NUM_PROCS.
+    SET(MAX_NUM_PROCS ${USE_NUM_PROCS})
+    MESSAGE(STATUS "HOMME testing max procs (from USE_NUM_PROCS): ${USE_NUM_PROCS}")
   ELSE ()
-    INCLUDE(ProcessorCount)
-    ProcessorCount(MAX_NUM_PROCS)
-    MESSAGE(STATUS "Warning: No queuing system. Maximum number of processes is ${MAX_NUM_PROCS}")
+    # HOMME_TESTING_MAX_PROCS caps the per-test NUM_CPUS when running without a
+    # queuing system and USE_NUM_PROCS is not set.  The default of 24 matches a
+    # typical CIME _P24 test layout; pass -DHOMME_TESTING_MAX_PROCS=N to
+    # override (e.g. from a CIME _P<N> test name or a machine XML default).
+    IF (NOT DEFINED HOMME_TESTING_MAX_PROCS)
+      SET (HOMME_TESTING_MAX_PROCS 24 CACHE STRING
+           "Maximum MPI ranks per test when running without a queuing system (default 24)")
+    ENDIF ()
+    SET(MAX_NUM_PROCS ${HOMME_TESTING_MAX_PROCS})
+    MESSAGE(STATUS "HOMME testing max procs (HOMME_TESTING_MAX_PROCS): ${HOMME_TESTING_MAX_PROCS}")
   ENDIF ()
 ELSE ()
   IF (USE_NUM_PROCS)
@@ -117,6 +128,15 @@ CONFIGURE_FILE(${HOMME_SOURCE_DIR}/test/reg_test/run_tests/submit_tests.sh
                ${CMAKE_BINARY_DIR}/tests/submit_tests.sh @ONLY)
 CONFIGURE_FILE(${HOMME_SOURCE_DIR}/test/reg_test/run_tests/diff_output.sh
                ${CMAKE_BINARY_DIR}/tests/diff_output.sh @ONLY)
+# Per-test timeout (seconds) applied by runTestsStd() via the shell 'timeout'
+# command.  On timeout the test is skipped and the suite continues rather than
+# aborting; 0 disables the timeout entirely.
+IF (NOT DEFINED HOMME_TESTING_TIMELIMIT)
+  SET (HOMME_TESTING_TIMELIMIT 1800 CACHE STRING
+       "Per-test timeout in seconds used by runTestsStd() (0 = no limit)")
+ENDIF ()
+MESSAGE(STATUS "HOMME per-test testing timelimit: ${HOMME_TESTING_TIMELIMIT} seconds")
+
 CONFIGURE_FILE(${HOMME_SOURCE_DIR}/test/reg_test/run_tests/cmake_variables.sh
                ${CMAKE_BINARY_DIR}/tests/cmake_variables.sh @ONLY)
 CONFIGURE_FILE(${HOMME_SOURCE_DIR}/test/reg_test/run_tests/check_baseline.sh
@@ -192,9 +212,6 @@ IF(${BUILD_HOMME_PREQX})
 #  ADD_SUBDIRECTORY(preqx-nlev100-native)
 #  ADD_SUBDIRECTORY(preqx-nlev140-native)
 #  ADD_SUBDIRECTORY(preqx-nlev200-native)
-  IF(${BUILD_HOMME_PREQX_ACC})
-    ADD_SUBDIRECTORY(baroCam-acc)
-  ENDIF()
 ENDIF()
 
 # Add the test exec subdirs for the prim executable
@@ -213,7 +230,7 @@ IF(${BUILD_HOMME_THETA})
 #  ADD_SUBDIRECTORY(theta-l-nlev30-native)
 #  ADD_SUBDIRECTORY(theta-l-nlev64-native)
 #  ADD_SUBDIRECTORY(theta-l-nlev100-native)
-#  ADD_SUBDIRECTORY(theta-l-nlev128-native)
+  ADD_SUBDIRECTORY(theta-l-nlev128-native)
 #  ADD_SUBDIRECTORY(theta-l-nlev140-native)
 #  ADD_SUBDIRECTORY(theta-l-nlev150-native)
 #  ADD_SUBDIRECTORY(theta-l-nlev200-native)
@@ -240,6 +257,7 @@ IF (${BUILD_HOMME_THETA_KOKKOS})
     # For doubly periodic tests.
     ADD_SUBDIRECTORY(theta-l-nlev20-native-kokkos)
     ADD_SUBDIRECTORY(theta-l-nlev10-native-kokkos)
+    ADD_SUBDIRECTORY(theta-l-nlev128-native-kokkos)
 
     # This one we build it only if both theta and theta_kokkos are requested,
     # since it's just needed for perf/correctness comparisons
@@ -250,16 +268,6 @@ IF (${BUILD_HOMME_THETA_KOKKOS})
     ADD_SUBDIRECTORY(thetal_kokkos_ut)
   endif()
 
-ENDIF()
-
-# Add the test exec subdirs for the prim executable
-IF(${BUILD_HOMME_PRIM})
-  ADD_SUBDIRECTORY(primA)
-ENDIF()
-
-# Add the test exec subdirs for the swim executable
-IF(${BUILD_HOMME_SWIM})
-  ADD_SUBDIRECTORY(swim5)
 ENDIF()
 
 # Test some stuff in the shared folder
@@ -284,7 +292,7 @@ INCLUDE(${HOMME_SOURCE_DIR}/test/reg_test/run_tests/test-list.cmake)
 SET(TEST_DIR_LIST "")
 createTests(HOMME_TESTS)
 
-IF (${BUILD_HOMME_PREQX_KOKKOS})
+IF (HOMMEXX_BFB_TESTING AND BUILD_HOMME_PREQX_KOKKOS)
   MESSAGE("-- Generating preqx tests no more intensive than profile ${HOMME_TESTING_PROFILE}.\n"
     "   Example ctest lines:\n"
     "     ctest -LE \"nightly\": All tests except nightly.\n"
@@ -296,7 +304,7 @@ IF (${BUILD_HOMME_PREQX_KOKKOS})
     CREATE_CXX_VS_F90_TESTS_WITH_PROFILE(PREQX_COMPARE_F_C_TEST ${p})
   ENDFOREACH ()
 ENDIF()
-IF (${BUILD_HOMME_THETA_KOKKOS})
+IF (HOMMEXX_BFB_TESTING AND BUILD_HOMME_THETA_KOKKOS)
   MESSAGE("-- Generating theta tests no more intensive than profile ${HOMME_TESTING_PROFILE}.\n"
     "   Example ctest lines:\n"
     "     ctest -LE \"nightly\": All tests except nightly.\n"
@@ -307,11 +315,6 @@ IF (${BUILD_HOMME_THETA_KOKKOS})
     createTestsWithProfile(HOMME_THETA_TESTS_WITH_PROFILE ${p})
     CREATE_CXX_VS_F90_TESTS_WITH_PROFILE(THETA_COMPARE_F_C_TEST ${p})
   ENDFOREACH ()
-ENDIF()
-
-IF(${BUILD_HOMME_PREQX} AND ${BUILD_HOMME_PREQX_ACC})
-  # add a test dependency here:
-  set_property(TEST baroCamMoist-acc APPEND PROPERTY DEPENDS baroCamMoist)
 ENDIF()
 
 # End the file with the total number of test files

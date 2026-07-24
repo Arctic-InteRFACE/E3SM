@@ -6,6 +6,8 @@
 // For reading fractional land use file
 #include <physics/mam/readfiles/fractional_land_use.hpp>
 
+#include <ekat_team_policy_utils.hpp>
+
 namespace scream {
 
 using FracLandUseFunc = frac_landuse::fracLandUseFunctions<Real, DefaultDevice>;
@@ -22,13 +24,12 @@ MAMDryDep::MAMDryDep(const ekat::Comm &comm, const ekat::ParameterList &params)
 // ================================================================
 //  SET_GRIDS
 // ================================================================
-void MAMDryDep::set_grids(
-    const std::shared_ptr<const GridsManager> grids_manager) {
+void MAMDryDep::create_requests() {
   using namespace ekat::units;
 
   // set grid for all the inputs and outputs
   // use physics grid
-  grid_ = grids_manager->get_grid("physics");
+  grid_ = m_grids_manager->get_grid("physics");
 
   // Name of the grid
   const auto &grid_name = grid_->name();
@@ -46,8 +47,8 @@ void MAMDryDep::set_grids(
 
   // Layout for 3D (2d horiz X 1d vertical) variable defined at mid-level and
   // interfaces
-  const FieldLayout scalar3d_mid = grid_->get_3d_scalar_layout(true);
-  const FieldLayout scalar3d_int = grid_->get_3d_scalar_layout(false);
+  const FieldLayout scalar3d_mid = grid_->get_3d_scalar_layout(LEV);
+  const FieldLayout scalar3d_int = grid_->get_3d_scalar_layout(ILEV);
 
   // layout for 2D (ncol, pcnst)
   constexpr int pcnst = mam4::aero_model::pcnst;
@@ -60,10 +61,9 @@ void MAMDryDep::set_grids(
   // at mid points
   const int num_aero_modes       = mam_coupling::num_aero_modes();
   const FieldLayout vector3d_mid = grid_->get_3d_vector_layout(
-      true, num_aero_modes, mam_coupling::num_modes_tag_name());
+      LEV, num_aero_modes, mam_coupling::num_modes_tag_name());
 
   using namespace ekat::units;
-  auto nondim = ekat::units::Units::nondimensional();
 
   auto m3 = m * m * m;  // meter cubed
 
@@ -87,7 +87,7 @@ void MAMDryDep::set_grids(
   //----------- Variables from microphysics scheme -------------
 
   // Total cloud fraction [fraction] (Require only for building DS)
-  add_field<Required>("cldfrac_tot", scalar3d_mid, nondim, grid_name);
+  add_field<Required>("cldfrac_tot", scalar3d_mid, none, grid_name);
 
   //----------- Variables from coupler (land component)---------
   // Obukhov length [m]
@@ -97,7 +97,7 @@ void MAMDryDep::set_grids(
   add_field<Required>("ustar", scalar2d, m / s, grid_name);
 
   // Land fraction [fraction]
-  add_field<Required>("landfrac", scalar2d, nondim, grid_name);
+  add_field<Required>("landfrac", scalar2d, none, grid_name);
 
   // Friction velocity from land model [m/s]
   add_field<Required>("fv", scalar2d, m / s, grid_name);
@@ -108,11 +108,11 @@ void MAMDryDep::set_grids(
   //----------- Variables from coupler (ice component)---------
 
   // Ice fraction [unitless]
-  add_field<Required>("icefrac", scalar2d, nondim, grid_name);
+  add_field<Required>("icefrac", scalar2d, none, grid_name);
 
   //----------- Variables from coupler (ocean component)---------
   // Ocean fraction [unitless]
-  add_field<Required>("ocnfrac", scalar2d, nondim, grid_name);
+  add_field<Required>("ocnfrac", scalar2d, none, grid_name);
 
   //----------- Variables from other mam4xx processes ------------
   // Geometric mean wet diameter for number distribution [m]
@@ -146,7 +146,7 @@ void MAMDryDep::set_grids(
                       vector2d_pcnst, 1 / m2 / s, grid_name);
 
   // Fractional land use [fraction]
-  add_field<Computed>("fraction_landuse", vector2d_class, nondim, grid_name);
+  add_field<Computed>("fraction_landuse", vector2d_class, none, grid_name);
   // -------------------------------------------------------------
   // setup to enable reading fractional land use file
   // -------------------------------------------------------------
@@ -334,8 +334,8 @@ void MAMDryDep::initialize_impl(const RunType run_type) {
 
 // =========================================================================================
 void MAMDryDep::run_impl(const double dt) {
-  const auto scan_policy = ekat::ExeSpaceUtils<
-      KT::ExeSpace>::get_thread_range_parallel_scan_team_policy(ncol_, nlev_);
+  using TPF = ekat::TeamPolicyFactory<KT::ExeSpace>;
+  const auto scan_policy = TPF::get_thread_range_parallel_scan_team_policy(ncol_, nlev_);
 
   // preprocess input -- needs a scan for the calculation of atm height
   pre_process(wet_aero_, dry_aero_, wet_atm_, dry_atm_);

@@ -175,8 +175,9 @@ module seq_diag_mct
   integer(in),parameter :: f_wevap_HDO =42     ! water: evaporation
   integer(in),parameter :: f_wroff_HDO =43     ! water: runoff/flood
   integer(in),parameter :: f_wioff_HDO =44     ! water: frozen runoff
+  integer(in),parameter :: f_salt      =45     ! salt: salinity flux
 
-  integer(in),parameter :: f_size     = f_wioff_HDO   ! Total array size of all elements
+  integer(in),parameter :: f_size     = f_salt        ! Total array size of all elements
   integer(in),parameter :: f_a        = f_area        ! 1st index for area
   integer(in),parameter :: f_a_end    = f_area        ! last index for area
   integer(in),parameter :: f_h        = f_hfrz        ! 1st index for heat
@@ -190,14 +191,14 @@ module seq_diag_mct
   integer(in),parameter :: f_16O_end  = f_wioff_16O   ! Last index for 16O water isotope
   integer(in),parameter :: f_18O_end  = f_wioff_18O   ! Last index for 18O water isotope
   integer(in),parameter :: f_HDO_end  = f_wioff_HDO   ! Last index for HDO water isotope
+  integer(in),parameter :: f_s        = f_salt        ! 1st index for salt
+  integer(in),parameter :: f_s_end    = f_salt        ! last index for salt
 
   character(len=12),parameter :: fname(f_size) = &
 
        (/'        area','     hfreeze','       hmelt','      hnetsw','       hlwdn', &
        '       hlwup','     hlatvap','     hlatfus','      hiroff','        hsen', &
-!       '      hpolar','    hh2otemp','     wfreeze','       wmelt','       wrain', &
        '      hpolar','    hh2otemp','       hgsmb','     wfreeze','       wmelt','       wrain', &
-!       '       wsnow','      wpolar','       wevap','     wrunoff','     wfrzrof', &
        '       wsnow','      wpolar','       wgsmb','       wevap','     wrunoff','     wfrzrof', &
        '      wirrig',                                                             &
        ' wfreeze_16O','   wmelt_16O','   wrain_16O','   wsnow_16O',                &
@@ -205,7 +206,7 @@ module seq_diag_mct
        ' wfreeze_18O','   wmelt_18O','   wrain_18O','   wsnow_18O',                &
        '   wevap_18O',' wrunoff_18O',' wfrzrof_18O',                               &
        ' wfreeze_HDO','   wmelt_HDO','   wrain_HDO','   wsnow_HDO',                &
-       '   wevap_HDO',' wrunoff_HDO',' wfrzrof_HDO'/)
+       '   wevap_HDO',' wrunoff_HDO',' wfrzrof_HDO','        salt'/)
 
   !--- P for period ---
 
@@ -1340,8 +1341,6 @@ contains
     real(r8)                 :: ca_g            ! area of a grid cell
     logical,save             :: first_time = .true.
 
-    integer,save             :: smb_vector_length,calving_vector_length
-
     !----- formats -----
     character(*),parameter :: subName = '(seq_diag_glc_mct) '
 
@@ -1359,17 +1358,24 @@ contains
 
     ip = p_inst
 
+    if (first_time) then
+
+       ! we calc these both first rather then in their respective "if" constructs
+       ! below to avoid g2x indices not getting calculated (because the call to
+       ! x2g and g2x happen separately, in budgets1 and budgets2, respectively).
+
+       ! indices needed for g2x
+       index_g2x_Fogg_rofl   = mct_aVect_indexRA(g2x_g,'Fogg_rofl')
+       index_g2x_Fogg_rofi   = mct_aVect_indexRA(g2x_g,'Fogg_rofi')
+       index_g2x_Figg_rofi   = mct_aVect_indexRA(g2x_g,'Figg_rofi')
+
+       ! indices needed for x2g
+       index_x2g_Flgl_qice  = mct_aVect_indexRA(x2g_g,'Flgl_qice')
+       index_g2x_Sg_icemask = mct_avect_indexRA(g2x_g,'Sg_icemask')
+
+    end if
+
     if( present(do_g2x))then  ! do fields from glc to coupler (g2x_)
-
-       if (first_time) then
-
-          calving_vector_length = 0
-
-          index_g2x_Fogg_rofl   = mct_aVect_indexRA(g2x_g,'Fogg_rofl')
-          index_g2x_Fogg_rofi   = mct_aVect_indexRA(g2x_g,'Fogg_rofi')
-          index_g2x_Figg_rofi   = mct_aVect_indexRA(g2x_g,'Figg_rofi')
-
-       end if
 
        ic = c_glc_gr
        kArea = mct_aVect_indexRA(dom_g%data,afldname)
@@ -1388,13 +1394,6 @@ contains
 
     if( present(do_x2g))then  ! do fields from coupler to glc (x2g_)
 
-       if (first_time) then
-
-          index_x2g_Flgl_qice  = mct_aVect_indexRA(x2g_g,'Flgl_qice')
-          index_g2x_Sg_icemask = mct_avect_indexRA(g2x_g,'Sg_icemask')
-
-       end if
-
        l2gacc_lx_cnt_avg = prep_glc_get_l2gacc_lx_cnt_avg() ! counter for how many times SMB flux accumulation has occured 
        ic = c_glc_gs
        kArea = mct_aVect_indexRA(dom_g%data,afldname)
@@ -1408,8 +1407,6 @@ contains
        budg_dataL(nf,ic,ip) = budg_dataL(nf,ic,ip) * l2gacc_lx_cnt_avg
 
        budg_dataL(f_hgsmb,ic,ip) = budg_dataL(f_wgsmb,ic,ip)*shr_const_latice 
-
-       smb_vector_length = smb_vector_length +lSize
 
     end if ! end do fields from coupler to glc (x2g_)
 
@@ -1630,6 +1627,7 @@ contains
           nf = f_wpolar; budg_dataL(nf,ic,ip) = budg_dataL(nf,ic,ip) + (ca_o+ca_i)*x2o_o%rAttr(index_x2o_Fioi_bergw,n)
           nf = f_wroff ; budg_dataL(nf,ic,ip) = budg_dataL(nf,ic,ip) + (ca_o+ca_i)*x2o_o%rAttr(index_x2o_Foxx_rofl,n)
           nf = f_wioff ; budg_dataL(nf,ic,ip) = budg_dataL(nf,ic,ip) + (ca_o+ca_i)*x2o_o%rAttr(index_x2o_Foxx_rofi,n)
+          nf = f_salt  ; budg_dataL(nf,ic,ip) = budg_dataL(nf,ic,ip) + (ca_o+ca_i)*x2o_o%rAttr(index_x2o_Fioi_salt,n)
 
 
           if ( flds_wiso_ocn )then
@@ -1783,6 +1781,7 @@ contains
           nf = f_hsen  ; budg_dataL(nf,ic,ip) = budg_dataL(nf,ic,ip) + ca_i*i2x_i%rAttr(index_i2x_Faii_sen,n)
           nf = f_wmelt ; budg_dataL(nf,ic,ip) = budg_dataL(nf,ic,ip) - ca_i*i2x_i%rAttr(index_i2x_Fioi_meltw,n)
           nf = f_wevap ; budg_dataL(nf,ic,ip) = budg_dataL(nf,ic,ip) + ca_i*i2x_i%rAttr(index_i2x_Faii_evap,n)
+          nf = f_salt  ; budg_dataL(nf,ic,ip) = budg_dataL(nf,ic,ip) - ca_i*i2x_i%rAttr(index_i2x_Fioi_salt,n)
 
           if ( flds_wiso_ice )then
              nf = f_wmelt_16O;
@@ -1996,6 +1995,7 @@ contains
              if ( flds_wiso )then
                 dataGpr(iso0(1):isof(nisotopes),:,:) = dataGpr(iso0(1):isof(nisotopes),:,:) * 1.0e6_r8
              end if
+             dataGpr(f_s:f_s_end,:,:) = dataGpr(f_s:f_s_end,:,:) * 1.0e8_r8
              dataGpr = dataGpr/budg_ns
 
              if (iam /= 0) return
@@ -2087,6 +2087,17 @@ contains
                            sum(dataGpr(iso0(is):isof(is),ico,ip))
                    end do
                 end if
+
+                write(logunit,*) ' '
+                write(logunit,FAH) subname,trim(str)//' SALT BUDGET ((kg/s)/m^2*1e8): period = ',trim(pname(ip)),': date = ',cdate,sec
+                write(logunit,FA0) cname(ica),cname(icl),cname(icn),cname(ics),cname(ico),' *SUM*  '
+                do nf = f_s, f_s_end
+                   write(logunit,FA1)    fname(nf),dataGpr(nf,ica,ip),dataGpr(nf,icl,ip), &
+                        dataGpr(nf,icn,ip),dataGpr(nf,ics,ip),dataGpr(nf,ico,ip), &
+                        dataGpr(nf,ica,ip)+dataGpr(nf,icl,ip)+ &
+                        dataGpr(nf,icn,ip)+dataGpr(nf,ics,ip)+dataGpr(nf,ico,ip)
+                enddo
+                write(logunit,*) ' '
 
              enddo
           endif   ! plev
@@ -2193,6 +2204,17 @@ contains
                            -sum(dataGpr(iso0(is):isof(is),icas,ip))
                    end do
                 end if
+
+                write(logunit,*) ' '
+                write(logunit,FAH) subname,trim(str)//' SALT BUDGET (kg/m2s*1e8): period = ',trim(pname(ip)),': date = ',cdate,sec
+                write(logunit,FA0) cname(icar),cname(icxs),cname(icxr),cname(icas),' *SUM*  '
+                do nf = f_s, f_s_end
+                   write(logunit,FA1)    fname(nf),-dataGpr(nf,icar,ip),dataGpr(nf,icxs,ip), &
+                        dataGpr(nf,icxr,ip),-dataGpr(nf,icas,ip), &
+                        -dataGpr(nf,icar,ip)+dataGpr(nf,icxs,ip)+ &
+                        dataGpr(nf,icxr,ip)-dataGpr(nf,icas,ip)
+                enddo
+                write(logunit,*) ' '
              enddo
           endif   ! plev
 
@@ -2340,6 +2362,27 @@ contains
                         sum(dataGpr(iso0(is):isof(is),c_glc_gs,ip))
                 end do
              end if
+
+             write(logunit,*) ' '
+             write(logunit,FAH) subname,'NET SALT BUDGET (kg/m2s*1e8): period = ',trim(pname(ip)),': date = ',cdate,sec
+             write(logunit,FA0r) '     atm','     lnd','     rof','     ocn','  ice nh','  ice sh','     glc',' *SUM*  '
+             do nf = f_s, f_s_end
+                write(logunit,FA1r)   fname(nf),dataGpr(nf,c_atm_ar,ip)+dataGpr(nf,c_atm_as,ip), &
+                     dataGpr(nf,c_lnd_lr,ip)+dataGpr(nf,c_lnd_ls,ip), &
+                     dataGpr(nf,c_rof_rr,ip)+dataGpr(nf,c_rof_rs,ip), &
+                     dataGpr(nf,c_ocn_or,ip)+dataGpr(nf,c_ocn_os,ip), &
+                     dataGpr(nf,c_inh_ir,ip)+dataGpr(nf,c_inh_is,ip), &
+                     dataGpr(nf,c_ish_ir,ip)+dataGpr(nf,c_ish_is,ip), &
+                     dataGpr(nf,c_glc_gr,ip)+dataGpr(nf,c_glc_gs,ip), &
+                     dataGpr(nf,c_atm_ar,ip)+dataGpr(nf,c_atm_as,ip)+ &
+                     dataGpr(nf,c_lnd_lr,ip)+dataGpr(nf,c_lnd_ls,ip)+ &
+                     dataGpr(nf,c_rof_rr,ip)+dataGpr(nf,c_rof_rs,ip)+ &
+                     dataGpr(nf,c_ocn_or,ip)+dataGpr(nf,c_ocn_os,ip)+ &
+                     dataGpr(nf,c_inh_ir,ip)+dataGpr(nf,c_inh_is,ip)+ &
+                     dataGpr(nf,c_ish_ir,ip)+dataGpr(nf,c_ish_is,ip)+ &
+                     dataGpr(nf,c_glc_gr,ip)+dataGpr(nf,c_glc_gs,ip)
+             enddo
+             write(logunit,*) ' '
 
           endif
 

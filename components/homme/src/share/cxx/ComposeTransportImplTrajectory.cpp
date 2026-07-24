@@ -201,7 +201,7 @@ KOKKOS_FUNCTION static void calc_vertically_lagrangian_levels (
   // Gradient of eta_dot_dpdn = p_eta deta/dt at final time w.r.t. p at initial
   // time.
   const auto& ptp0 = dprecon;
-  cti::approx_derivative(kv, pref, *eta_dot_dpdn[1], ptp0);
+  cti::approx_derivative1(kv, pref, *eta_dot_dpdn[1], ptp0);
   kv.team_barrier();
 
   {
@@ -425,7 +425,7 @@ static int test_approx_derivative () {
     const auto f = KOKKOS_LAMBDA (const cti::MT& team) {
       KernelVariables kv(team);
       const auto f = [&] (const int i, const int j, const int k) {
-        const Real x = 1.7*(k + 1e-1*i*k + 1e-2*j*k*k)/cti::num_phys_lev;
+        const Real x = 1.7*(k + 1e-1*i*k + 1e-2*j*k*k)/(int)cti::num_phys_lev;
         xs(i,j,k) = x;
         ys(i,j,k) = (a*x + b)*x + c;
       };
@@ -437,7 +437,7 @@ static int test_approx_derivative () {
   { // Run approx_derivative.
     const auto f = KOKKOS_LAMBDA (const cti::MT& team) {
       KernelVariables kv(team);
-      cti::approx_derivative(kv, xp, yp, yip);
+      cti::approx_derivative1(kv, xp, yp, yip);
     };
     Kokkos::fence();
     Kokkos::parallel_for(policy, f);
@@ -569,7 +569,7 @@ int ComposeTransportImpl::run_trajectory_unit_tests () {
           test_reconstruct_and_limit_dp());
 }
 
-ComposeTransport::TestDepView::HostMirror ComposeTransportImpl::
+ComposeTransport::TestDepView::host_mirror_type ComposeTransportImpl::
 test_trajectory (Real t0, Real t1, const bool independent_time_steps) {
   using Kokkos::create_mirror_view;
   using Kokkos::deep_copy;

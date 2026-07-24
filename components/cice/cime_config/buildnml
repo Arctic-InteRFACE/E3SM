@@ -41,6 +41,7 @@ def buildnml(case, caseroot, compname):
     nthrds_ice         = case.get_value("NTHRDS_ICE")
     ntasks_ice         = case.get_value("NTASKS_ICE")
     ninst_ice          = case.get_value("NINST_ICE")
+    ntasks             = case.get_value("NTASKS_PER_INST_ICE")
     rundir             = case.get_value("RUNDIR")
     testcase           = case.get_value("TESTCASE")
     casebuild          = case.get_value("CASEBUILD")
@@ -61,7 +62,6 @@ def buildnml(case, caseroot, compname):
     # update env_build.xml settings to reflect changes in the configuration
     # this will trigger whether an automatic build is set upon the job resubmission
     if cice_auto_decomp:
-        ntasks = int(ntasks_ice / ninst_ice)
         hgrid  = ice_grid
         if ice_grid == 'ar9v2': hgrid = 'ar9v1'
         if ice_grid == 'ar9v4': hgrid = 'ar9v3'
@@ -96,6 +96,14 @@ def buildnml(case, caseroot, compname):
     case.set_value("CICE_CPPDEFS", "{}".format(cppdefs))
 
     case.flush()
+
+    # write the complete cppdefs (including BLCK values) back to CIME_cppdefs so that
+    # the cmake build system picks up the correct defines if it re-configures.
+    # The cice configure script writes CIME_cppdefs without BLCK values (because it is
+    # called with -nodecomp), so we must update the file here after appending them.
+    if os.path.isfile(os.path.join(ciceconf_dir, "CIME_cppdefs")):
+        with open(os.path.join(ciceconf_dir, "CIME_cppdefs"), "w") as fd:
+            fd.write(cppdefs + "\n")
 
     # write out cppdefs to CICE_cppdefs.new
     # this will force gmake to rebuild when $CASE.buildexe is called

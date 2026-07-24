@@ -291,8 +291,8 @@ module mpas_stream_manager
     !>  The optional argument ioType specifies the I/O type to use for the
     !>  stream; possible values are defined by constants in the mpas_io module and
     !>  include: MPAS_IO_NETCDF, MPAS_IO_NETCDF4, MPAS_IO_PNETCDF, MPAS_IO_ADIOS,
-    !>  MPAS_IO_ADIOSC and MPAS_IO_PNETCDF5. If not specified, the io_type will
-    !>  default to MPAS_IO_PNETCDF.
+    !>  MPAS_IO_ADIOSC, MPAS_IO_HDF5, MPAS_IO_HDF5C and MPAS_IO_PNETCDF5. If not
+    !>  specified, the io_type will default to MPAS_IO_PNETCDF.
     !>  NOTE: This routine does not support regular expressions for StreamID
     !
     !-----------------------------------------------------------------------
@@ -4337,7 +4337,10 @@ module mpas_stream_manager
                         call mpas_writeStreamAtt(stream % stream, itr % memberName, intAtt, syncVal=.false., ierr=local_ierr)
                     else if ( itr % dataType == MPAS_POOL_CHARACTER ) then
                         call mpas_pool_get_config(stream % att_pool, itr % memberName, charAtt)
-                        call mpas_writeStreamAtt(stream % stream, itr % memberName, charAtt, syncVal=.false., ierr=local_ierr)
+                        local_ierr = MPAS_STREAM_NOERR
+                        if (len_trim(charAtt) > 0) then
+                            call mpas_writeStreamAtt(stream % stream, itr % memberName, charAtt, syncVal=.false., ierr=local_ierr)
+                        end if
                     else if ( itr % dataType == MPAS_POOL_LOGICAL ) then
                         call mpas_pool_get_config(stream % att_pool, itr % memberName, logAtt)
                         if (logAtt) then
@@ -5892,7 +5895,8 @@ subroutine stream_mgr_create_stream_c(manager_c, streamID_c, direction_c, filena
     use mpas_derived_types, only : MPAS_LOG_ERR
     use mpas_log
     use mpas_io, only : MPAS_IO_SINGLE_PRECISION, MPAS_IO_DOUBLE_PRECISION, MPAS_IO_NATIVE_PRECISION, &
-                        MPAS_IO_NETCDF, MPAS_IO_PNETCDF, MPAS_IO_NETCDF4, MPAS_IO_PNETCDF5, MPAS_IO_ADIOS, MPAS_IO_ADIOSC
+                        MPAS_IO_NETCDF, MPAS_IO_PNETCDF, MPAS_IO_NETCDF4, MPAS_IO_PNETCDF5, &
+                        MPAS_IO_ADIOS, MPAS_IO_ADIOSC, MPAS_IO_HDF5, MPAS_IO_HDF5C
 
     implicit none
 
@@ -5963,6 +5967,10 @@ subroutine stream_mgr_create_stream_c(manager_c, streamID_c, direction_c, filena
        iotype = MPAS_IO_ADIOS
     else if (iotype_c == 5) then
        iotype = MPAS_IO_ADIOSC
+    else if (iotype_c == 6) then
+       iotype = MPAS_IO_HDF5
+    else if (iotype_c == 7) then
+       iotype = MPAS_IO_HDF5C
     else
        iotype = MPAS_IO_PNETCDF
     end if

@@ -6,6 +6,8 @@
 // For reading soil erodibility file
 #include <physics/mam/readfiles/soil_erodibility.hpp>
 
+#include <ekat_team_policy_utils.hpp>
+
 namespace scream {
 
 // For reading soil erodibility file
@@ -18,7 +20,14 @@ using soilErodibilityFunc =
 MAMSrfOnlineEmiss::MAMSrfOnlineEmiss(const ekat::Comm &comm,
                                      const ekat::ParameterList &params)
     : MAMGenericInterface(comm, params) {
-  // FIXME: Do we want to read dust emiss factor from the namelist??
+
+  // FIXME: temporary solution to fix the sp test fails for the PR
+  double dbl_dust_emis_scale_factor = m_params.get<double>("srf_emis_scale_factor_for_dust", 1.0);
+  dust_emis_scale_factor = static_cast<Real>(dbl_dust_emis_scale_factor);
+
+  double dbl_seasalt_emis_scale_factor = m_params.get<double>("srf_emis_scale_factor_for_seasalt", 1.0);
+  seasalt_emis_scale_factor = static_cast<Real>(dbl_seasalt_emis_scale_factor);
+
   /* Anything that can be initialized without grid information can be
    * initialized here. Like universal constants.
    */
@@ -29,25 +38,24 @@ MAMSrfOnlineEmiss::MAMSrfOnlineEmiss(const ekat::Comm &comm,
 // ================================================================
 //  SET_GRIDS
 // ================================================================
-void MAMSrfOnlineEmiss::set_grids(
-    const std::shared_ptr<const GridsManager> grids_manager) {
-  grid_                 = grids_manager->get_grid("physics");
+void MAMSrfOnlineEmiss::create_requests() {
+  grid_                 = m_grids_manager->get_grid("physics");
   const auto &grid_name = grid_->name();
 
   ncol_ = grid_->get_num_local_dofs();       // Number of columns on this rank
   nlev_ = grid_->get_num_vertical_levels();  // Number of levels per column
 
   using namespace ekat::units;
+  using namespace ShortFieldTagsNames;
   constexpr auto m2     = pow(m, 2);
   constexpr auto s2     = pow(s, 2);
-  constexpr auto nondim = ekat::units::Units::nondimensional();
 
   const FieldLayout scalar2d   = grid_->get_2d_scalar_layout();
-  const FieldLayout scalar3d_m = grid_->get_3d_scalar_layout(true);   // mid
-  const FieldLayout scalar3d_i = grid_->get_3d_scalar_layout(false);  // int
+  const FieldLayout scalar3d_m = grid_->get_3d_scalar_layout(LEV);   // mid
+  const FieldLayout scalar3d_i = grid_->get_3d_scalar_layout(ILEV);  // int
 
   // For U and V components of wind
-  const FieldLayout vector3d = grid_->get_3d_vector_layout(true, 2);
+  const FieldLayout vector3d = grid_->get_3d_vector_layout(LEV, 2);
 
   // For components of dust flux
   const FieldLayout vector4d = grid_->get_2d_vector_layout(4);
@@ -79,7 +87,7 @@ void MAMSrfOnlineEmiss::set_grids(
 
   //----------- Variables from coupler (ocean component)---------
   // Ocean fraction [unitless]
-  add_field<Required>("ocnfrac", scalar2d, nondim, grid_name);
+  add_field<Required>("ocnfrac", scalar2d, none, grid_name);
 
   // Sea surface temperature [K]
   add_field<Required>("sst", scalar2d, K, grid_name);
@@ -113,6 +121,7 @@ void MAMSrfOnlineEmiss::set_grids(
   dms.data_file    = m_params.get<std::string>("srf_emis_specifier_for_dms");
   dms.species_name = "dms";
   dms.sectors      = {"DMS"};
+  dms.scale_factor = m_params.get<Real>("srf_emis_scale_factor_for_dms", 1.0);
   srf_emiss_species_.push_back(dms);  // add to the vector
 
   //--------------------------------------------------------------------
@@ -294,6 +303,9 @@ void MAMSrfOnlineEmiss::initialize_impl(const RunType run_type) {
   set_ranges_process(ranges_emissions);
   add_interval_checks();
 
+  // Get dust emission scheme from namelist
+  auto dust_emis_scheme = m_params.get<int>("dust_emis_scheme", 1);
+
   // ---------------------------------------------------------------
   // Input fields read in from IC file, namelist or other processes
   // ---------------------------------------------------------------
@@ -326,18 +338,26 @@ void MAMSrfOnlineEmiss::initialize_impl(const RunType run_type) {
   //--------------------------------------------------------------------
   for(srf_emiss_ &ispec_srf : srf_emiss_species_) {
     srfEmissFunc::update_srfEmiss_data_from_file(
-        ispec_srf.dataReader_, start_of_step_ts(), curr_month, *ispec_srf.horizInterp_,
+        ispec_srf.dataReader_, start_of_step_ts(), curr_month,
+        ispec_srf.scale_factor, *ispec_srf.horizInterp_,
         ispec_srf.data_end_);  // output
   }
 
   //-----------------------------------------------------------------
   // Read Soil erodibility data
   //-----------------------------------------------------------------
-  // This data is time-independent, we read all data here for the
-  // entire simulation
-  soilErodibilityFunc::update_soil_erodibility_data_from_file(
-      serod_dataReader_, *serod_horizInterp_,
-      soil_erodibility_);  // output
+  if (dust_emis_scheme == 1) {
+    // This data is time-independent, we read all data here for the
+    // entire simulation   
+    soilErodibilityFunc::update_soil_erodibility_data_from_file(
+        serod_dataReader_, *serod_horizInterp_,
+        soil_erodibility_);  // output
+  } else if (dust_emis_scheme == 2) {
+    // For dust emission scheme 2, override soil erodibility to 1
+    auto soil_erod_ones = view_1d("soil_erod_ones", ncol_);
+    Kokkos::deep_copy(soil_erod_ones, 1.0);
+    soil_erodibility_ = soil_erod_ones;
+  }
 
   //--------------------------------------------------------------------
   // Update marine orgaincs from file
@@ -358,8 +378,8 @@ void MAMSrfOnlineEmiss::initialize_impl(const RunType run_type) {
 //  RUN_IMPL
 // ================================================================
 void MAMSrfOnlineEmiss::run_impl(const double dt) {
-  const auto scan_policy = ekat::ExeSpaceUtils<
-      KT::ExeSpace>::get_thread_range_parallel_scan_team_policy(ncol_, nlev_);
+  using TPF = ekat::TeamPolicyFactory<KT::ExeSpace>;
+  const auto scan_policy = TPF::get_thread_range_parallel_scan_team_policy(ncol_, nlev_);
 
   // preprocess input -- needs a scan for the calculation of atm height
   Kokkos::parallel_for("preprocess", scan_policy, preprocess_);
@@ -426,6 +446,8 @@ void MAMSrfOnlineEmiss::run_impl(const double dt) {
   compute_online_dust_nacl_emiss(ncol_, nlev_, ocnfrac, sst, u_wind, v_wind,
                                  dstflx, mpoly, mprot, mlip, soil_erodibility,
                                  z_mid,
+                                 dust_emis_scale_factor,
+                                 seasalt_emis_scale_factor,
                                  // output
                                  constituent_fluxes);
   Kokkos::fence();
@@ -439,7 +461,7 @@ void MAMSrfOnlineEmiss::run_impl(const double dt) {
 
     // Update time state and if the month has changed, update the data.
     srfEmissFunc::update_srfEmiss_timestate(
-        ispec_srf.dataReader_, ts, *ispec_srf.horizInterp_,
+        ispec_srf.dataReader_, ts, *ispec_srf.horizInterp_, ispec_srf.scale_factor,
         // output
         ispec_srf.timeState_, ispec_srf.data_start_, ispec_srf.data_end_);
 

@@ -74,6 +74,7 @@ module li_core
       use li_subglacial_hydro
       use li_bedtopo
       use li_advection
+      use li_time_average_coupled
 !!!      use mpas_tracer_advection
 !!!      use li_global_diagnostics
 
@@ -110,7 +111,7 @@ module li_core
       logical, pointer :: config_do_restart
       real (kind=RKIND), pointer :: deltat  ! variable in each block
       real (kind=RKIND) :: dtSeconds ! local variable
-      type (MPAS_Pool_type), pointer :: meshPool, geometryPool, velocityPool
+      type (MPAS_Pool_type), pointer :: meshPool, geometryPool, velocityPool, timeAveragingPool
       type (MPAS_TimeInterval_type) :: timeStepInterval
       character (len=StrKIND), pointer :: xtime, simulationStartTime
       real (kind=RKIND), pointer :: daysSinceStart
@@ -299,6 +300,7 @@ module li_core
          call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
          call mpas_pool_get_subpool(block % structs, 'velocity', velocityPool)
          call mpas_pool_get_subpool(block % structs, 'geometry', geometryPool)
+         call mpas_pool_get_subpool(block % structs, 'timeAveraging', timeAveragingPool)
 
          call li_calculate_mask(meshPool, velocityPool, geometryPool, err_tmp)
          err = ior(err, err_tmp)
@@ -323,6 +325,9 @@ module li_core
       ! initialize analysis driver
       call li_analysis_init(domain, err_tmp)
       err = ior(err, err_tmp)
+
+      ! initialize time averaging of fields sent to coupler
+      call li_time_average_coupled_init(meshPool,timeAveragingPool)      
 
       ! halo update for reconstruction coefficients
       ! Note: Results on multiple processors may be incorrect without this update
@@ -756,6 +761,7 @@ module li_core
       real(kind=RKIND) :: deltatTemp
 
       integer :: err, err_tmp, globalErr
+      integer, pointer :: albanyVelocityError
       logical :: solveVelo
 
       integer, dimension(:), pointer :: vertexMask
@@ -810,7 +816,10 @@ module li_core
       end do
 
       ! Initial velocity solve
-      call li_velocity_solve(domain, solveVelo=solveVelo, err=err_tmp)
+      call mpas_pool_get_subpool(domain % blocklist % structs, 'velocity', velocityPool)
+      call mpas_pool_get_array(velocityPool, 'albanyVelocityError', albanyVelocityError)
+      albanyVelocityError = 0
+      call li_velocity_solve(domain, solveVelo=solveVelo, updateMask=.true., err=err_tmp)
       err = ior(err, err_tmp)
 
       ! Initial calving solution

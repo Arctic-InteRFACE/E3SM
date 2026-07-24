@@ -6,8 +6,8 @@ module eamxx_cpl_indices
   private
 
   ! Focus only on the ones that scream imports/exports (subsets of x2a and a2x)
-  integer, parameter, public :: num_scream_imports = 24
-  integer, parameter, public :: num_scream_exports = 17
+  integer, parameter, public :: num_scream_imports = 25
+  integer, parameter, public :: num_scream_exports = 20
   integer, public :: num_cpl_imports, num_cpl_exports, import_field_size, export_field_size
 
   ! Names used by scream for import/export fields
@@ -97,6 +97,7 @@ module eamxx_cpl_indices
     import_field_names(22) = 'dstflx'
     import_field_names(23) = 'dstflx'
     import_field_names(24) = 'dstflx'
+    import_field_names(25) = 'h2otemp'  ! correction for air sea surface water thermo fixer
 
     ! CPL indices
     import_cpl_indices(1)  = mct_avect_indexra(x2a,'Sx_avsdr')
@@ -125,6 +126,8 @@ module eamxx_cpl_indices
     import_cpl_indices(22) = mct_avect_indexra(x2a,'Fall_flxdst2')
     import_cpl_indices(23) = mct_avect_indexra(x2a,'Fall_flxdst3')
     import_cpl_indices(24) = mct_avect_indexra(x2a,'Fall_flxdst4')
+    ! h2otemp comes from ocean, and it is for air sea surface water thermo fixer
+    import_cpl_indices(25) = mct_avect_indexra(x2a,'Faoo_h2otemp',perrWith='quiet')
 
     ! Vector components
     !(Faxx_taux and Faxx_tauy)
@@ -183,6 +186,9 @@ module eamxx_cpl_indices
     export_field_names(15) = 'Faxa_swvdf' 
     export_field_names(16) = 'Faxa_swnet' 
     export_field_names(17) = 'Faxa_lwdn'  
+    export_field_names(18) = 'Sa_wsresp'
+    export_field_names(19) = 'Sa_tau_est'
+    export_field_names(20) = 'Sa_ugust'
 
     ! CPL indices
     export_cpl_indices(1)  = mct_avect_indexra(a2x,'Sa_z')
@@ -202,6 +208,9 @@ module eamxx_cpl_indices
     export_cpl_indices(15) = mct_avect_indexra(a2x,'Faxa_swvdf')
     export_cpl_indices(16) = mct_avect_indexra(a2x,'Faxa_swnet')
     export_cpl_indices(17) = mct_avect_indexra(a2x,'Faxa_lwdn')
+    export_cpl_indices(18) = mct_avect_indexra(a2x,'Sa_wsresp', perrWith='quiet')
+    export_cpl_indices(19) = mct_avect_indexra(a2x,'Sa_tau_est', perrWith='quiet')
+    export_cpl_indices(20) = mct_avect_indexra(a2x,'Sa_ugust', perrWith='quiet')
 
     ! Does this field need to be imported during intialization
     do_export_during_init(1) = .true.

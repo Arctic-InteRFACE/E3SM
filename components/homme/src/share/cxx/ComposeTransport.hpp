@@ -15,10 +15,10 @@
 
 namespace Homme {
 
-class FunctorsBuffersManager;
-class ComposeTransportImpl;
-class SimulationParams;
-class TimeLevel;
+struct FunctorsBuffersManager;
+struct ComposeTransportImpl;
+struct SimulationParams;
+struct TimeLevel;
 
 class ComposeTransport {
 public:
@@ -38,13 +38,14 @@ public:
   void init_buffers(const FunctorsBuffersManager& fbm);
   void init_boundary_exchanges();
 
+  void observe_velocity(const TimeLevel& tl, const int step);
   void run(const TimeLevel& tl, const Real dt);
   void remap_q(const TimeLevel& tl);
 
   std::vector<std::pair<std::string, int> > run_unit_tests();
 
   typedef Kokkos::View<Real*****, Kokkos::LayoutRight> TestDepView;
-  TestDepView::HostMirror test_trajectory(Real t0, Real t1, bool independent_time_steps);
+  TestDepView::host_mirror_type test_trajectory(Real t0, Real t1, bool independent_time_steps);
 
   void test_2d(const bool bfb, const int nstep, std::vector<Real>& eval);
 

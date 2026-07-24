@@ -3,14 +3,15 @@
 
 #include "eamxx_io_control.hpp"
 #include "share/util/eamxx_time_stamp.hpp"
-#include "share/atm_process/atmosphere_diagnostic.hpp"
+#include "share/diagnostics/abstract_diagnostic.hpp"
 #include "share/grid/abstract_grid.hpp"
 
-#include <ekat/util/ekat_string_utils.hpp>
-#include <ekat/mpi/ekat_comm.hpp>
+#include <ekat_string_utils.hpp>
+#include <ekat_comm.hpp>
 
 #include <string>
 #include <memory>
+#include <utility>
 
 namespace scream
 {
@@ -76,18 +77,12 @@ std::string find_filename_in_rpointer (
     const OutputAvgType avg_type = OutputAvgType::Instant,
     const IOControl& control = {});
 
-// Shortcut to write/read to/from YYYYMMDD/HHMMSS attributes in the NC file
-void write_timestamp (const std::string& filename, const std::string& ts_name,
-                      const util::TimeStamp& ts, const bool write_nsteps = false);
-util::TimeStamp read_timestamp (const std::string& filename,
-                                const std::string& ts_name,
-                                const bool read_nsteps = false);
-
 // Create a diagnostic from a string representation of it.
 // E.g., create the diag to compute fieldX_at_500hPa.
-std::shared_ptr<AtmosphereDiagnostic>
+std::shared_ptr<AbstractDiagnostic>
 create_diagnostic (const std::string& diag_name,
                    const std::shared_ptr<const AbstractGrid>& grid);
 
 } // namespace scream
+
 #endif // SCREAM_IO_UTILS_HPP

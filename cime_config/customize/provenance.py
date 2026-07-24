@@ -371,7 +371,7 @@ def _record_timing(case, lid):
     try:
         full_timing_dir = _check_timing_dir(timing_dir, base_case, lid)
     except RuntimeError as e:
-        logger.warning("{!s}", e)
+        logger.warning(str(e))
 
         return
 
@@ -420,13 +420,11 @@ def _record_timing(case, lid):
 
 
 def _record_queue_info(mach, job_id, lid, full_timing_dir):
-    if mach in ["anvil", "chrysalis", "compy"]:
+    if mach in ["chrysalis", "compy"]:
         _record_anl_queue(job_id, lid, full_timing_dir)
 #TODO: Add Perlmutter
     elif mach in ["frontier", "crusher"]:
         _record_slurm_queue(job_id, lid, full_timing_dir)
-    elif mach == "summit":
-        _record_olcf_queue(job_id, lid, full_timing_dir)
 
 # TODO: Switch to generic Slurm routine
 def _record_nersc_queue(job_id, lid, full_timing_dir):
@@ -607,9 +605,13 @@ def save_postrun_provenance(case, lid=None):
 
             _archive_spio_stats(lid, rundir)
 
-            utils.gzip_existing_file(
-                os.path.join(caseroot, "timing", "e3sm_timing_stats.%s" % lid)
-            )
+            # Handle both single instance and multi-instance timing stats files
+            # For NINST=1: e3sm_timing_stats.{lid}
+            # For NINST>1: e3sm_timing_0001_stats.{lid}, e3sm_timing_0002_stats.{lid}, etc.
+            timing_stats_pattern = os.path.join(caseroot, "timing", "e3sm_timing*stats.%s" % lid)
+            timing_stats_files = glob.glob(timing_stats_pattern)
+            for timing_stats_file in timing_stats_files:
+                utils.gzip_existing_file(timing_stats_file)
 
             # JGF: not sure why we do this
             timing_saved_file = "timing.%s.saved" % lid
@@ -684,13 +686,15 @@ def _archive_atm_costs(lid, rundir):
 
 def _archive_memory_profile(lid, rundir):
     # gzip memory profile log
-    glob_to_copy = "memory.[0-4].*.log"
-    for item in glob.glob(os.path.join(rundir, glob_to_copy)):
-        mprof_dst_path = os.path.join(
-            os.path.dirname(item), (os.path.basename(item) + ".{}").format(lid)
-        )
-        shutil.move(item, mprof_dst_path)
-        utils.gzip_existing_file(mprof_dst_path)
+    # Handle both single instance (memory.[0-4].*.log) and multiple instances (memory_*.[0-4].*.log)
+    glob_patterns = ["memory.[0-4].*.log", "memory_*.[0-4].*.log"]
+    for glob_to_copy in glob_patterns:
+        for item in glob.glob(os.path.join(rundir, glob_to_copy)):
+            mprof_dst_path = os.path.join(
+                os.path.dirname(item), (os.path.basename(item) + ".{}").format(lid)
+            )
+            shutil.move(item, mprof_dst_path)
+            utils.gzip_existing_file(mprof_dst_path)
 
 
 def _archive_spio_stats(lid, rundir):
@@ -728,17 +732,16 @@ def _copy_performance_archive_files(
 ):
     globs_to_copy = []
     if job_id is not None:
-        if mach in ["anvil", "chrysalis", "compy"]:
+        if mach in ["chrysalis", "compy"]:
             globs_to_copy.append("run*%s*%s" % (case.get_value("CASE"), job_id))
-        elif mach == "summit":
-            globs_to_copy.append("e3sm.stderr.%s" % job_id)
-            globs_to_copy.append("e3sm.stdout.%s" % job_id)
 
     globs_to_copy.append("logs/run_environment.txt.{}".format(lid))
     globs_to_copy.append(os.path.join(rundir, "e3sm.log.{}.gz".format(lid)))
     globs_to_copy.append(os.path.join(rundir, "cpl.log.{}.gz".format(lid)))
+    globs_to_copy.append(os.path.join(rundir, "cpl_*.log.{}.gz".format(lid)))
     globs_to_copy.append(os.path.join(rundir, "atm_chunk_costs.{}.gz".format(lid)))
     globs_to_copy.append(os.path.join(rundir, "memory.[0-4].*.log.{}.gz".format(lid)))
+    globs_to_copy.append(os.path.join(rundir, "memory_*.[0-4].*.log.{}.gz".format(lid)))
     globs_to_copy.append("timing/*.{}*".format(lid))
     globs_to_copy.append("CaseStatus")
     globs_to_copy.append(os.path.join(rundir, "spio_stats.{}.tar.gz".format(lid)))
@@ -764,11 +767,9 @@ def _get_batch_job_id_for_syslog(case):
     """
     mach = case.get_value("MACH")
     try:
-        if mach in ["anvil", "chrysalis", "compy", "pm-cpu", "pm-gpu", "muller-cpu", "muller-gpu", "alvarez","frontier"]:
+        if mach in ["chrysalis", "compy", "pm-cpu", "pm-gpu", "muller-cpu", "muller-gpu", "alvarez","frontier"]:
             # Note: Besides, SLURM_JOB_ID, equivalent SLURM_JOBID is also present on some systems (Frontier).
             return os.environ["SLURM_JOB_ID"]
-        elif mach in ["summit"]:
-            return os.environ["LSB_JOBID"]
     except KeyError:
         pass
 

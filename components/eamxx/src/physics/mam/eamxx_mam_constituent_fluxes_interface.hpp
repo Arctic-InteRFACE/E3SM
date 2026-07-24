@@ -39,11 +39,10 @@ class MAMConstituentFluxes final : public MAMGenericInterface {
   // --------------------------------------------------------------------------
 
   // The name of the subcomponent
-  std::string name() const { return "mam_constituent_fluxes"; }
+  std::string name() const override { return "mam_constituent_fluxes"; }
 
   // grid
-  void set_grids(
-      const std::shared_ptr<const GridsManager> grids_manager) override;
+  void create_requests() override;
 
   // management of common atm process memory
   size_t requested_buffer_size_in_bytes() const override;
@@ -56,7 +55,7 @@ class MAMConstituentFluxes final : public MAMGenericInterface {
   void run_impl(const double dt) override;
 
   // Finalize
-  void finalize_impl(){/*Do nothing*/};
+  void finalize_impl() override {/*Do nothing*/};
 
 };  // MAMConstituentFluxes
 

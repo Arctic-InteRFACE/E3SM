@@ -7,11 +7,11 @@ SET(UTILS_TIMING_BIN_DIR  ${HOMME_BINARY_DIR}/utils/cime/CIME/non_py/src/timing)
 SET(UTILS_TIMING_DIRS ${UTILS_TIMING_SRC_DIR} ${UTILS_TIMING_BIN_DIR})
 
 # Place common CPP definitions here.
-# Note: need CUDA_BUILD and HOMMEXX_BFB_TESTING here, since the share
+# Note: HOMMEXX_BFB_TESTING here, since the share
 #       unit tests do not include a config.h file
 SET (COMMON_DEFINITIONS NP=4 NC=4)
-IF (CUDA_BUILD OR HIP_BUILD OR SYCL_BUILD)
-	SET(COMMON_DEFINITIONS ${COMMON_DEFINITIONS} HOMMEXX_ENABLE_GPU_F90)
+IF (HOMMEXX_ENABLE_GPU_F90)
+  SET(COMMON_DEFINITIONS ${COMMON_DEFINITIONS} HOMMEXX_ENABLE_GPU_F90)
 ENDIF()
 IF (HOMMEXX_BFB_TESTING)
   SET(COMMON_DEFINITIONS ${COMMON_DEFINITIONS} HOMMEXX_BFB_TESTING)
@@ -52,14 +52,14 @@ endif()
 if (HOMMEXX_BFB_TESTING)
 SET (BOUNDARY_EXCHANGE_UT_F90_SRCS
   ${SRC_DIR}/repro_sum_mod.F90
-  ${SRC_SHARE_DIR}/bndry_mod_base.F90
+  ${SRC_SHARE_DIR}/bndry_mod.F90
   ${SRC_SHARE_DIR}/control_mod.F90
   ${SRC_SHARE_DIR}/coordinate_systems_mod.F90
   ${SRC_SHARE_DIR}/cube_mod.F90
   ${SRC_SHARE_DIR}/planar_mod.F90
-  ${SRC_SHARE_DIR}/derivative_mod_base.F90
+  ${SRC_SHARE_DIR}/derivative_mod.F90
   ${SRC_SHARE_DIR}/dimensions_mod.F90
-  ${SRC_SHARE_DIR}/edge_mod_base.F90
+  ${SRC_SHARE_DIR}/edge_mod.F90
   ${SRC_SHARE_DIR}/edgetype_mod.F90
   ${SRC_SHARE_DIR}/element_mod.F90
   ${SRC_SHARE_DIR}/gridgraph_mod.F90
@@ -76,9 +76,6 @@ SET (BOUNDARY_EXCHANGE_UT_F90_SRCS
   ${SRC_SHARE_DIR}/spacecurve_mod.F90
   ${SRC_SHARE_DIR}/thread_mod.F90
   ${SRC_SHARE_DIR}/viscosity_base.F90
-  ${SRC_PREQX_DIR}/bndry_mod.F90
-  ${SRC_PREQX_DIR}/derivative_mod.F90
-  ${SRC_PREQX_DIR}/edge_mod.F90
   ${SRC_PREQX_DIR}/element_state.F90
   ${SHARE_UT_DIR}/boundary_exchange_ut.F90
   ${SHARE_UT_DIR}/geometry_interface.F90
@@ -107,11 +104,13 @@ SET (BOUNDARY_EXCHANGE_UT_INCLUDE_DIRS
   ${CMAKE_BINARY_DIR}/src/share/cxx
 )
 
-IF (USE_NUM_PROCS)
-  SET (NUM_CPUS ${USE_NUM_PROCS})
-ELSE()
-  SET (NUM_CPUS 1)
-ENDIF()
+# MPI_MAX_PROCS (the per-test rank ceiling) is already initialised to 24 by
+# default inside set_mpi_num_cpus() if it is not set before the call.
+# Callers that need a different ceiling (e.g. thetal_kokkos_ut sets it to 24
+# based on 6*ne^2 for ne=2) should set MPI_MAX_PROCS before calling the macro.
+# Note: USE_NUM_PROCS is a CMake cache variable (set via -DUSE_NUM_PROCS=N or
+# by CIME), not an environment variable; reading it from ENV{} would never work.
+set_mpi_num_cpus()
 cxx_unit_test (boundary_exchange_ut "${BOUNDARY_EXCHANGE_UT_F90_SRCS}" "${BOUNDARY_EXCHANGE_UT_CXX_SRCS}" "${BOUNDARY_EXCHANGE_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
 endif ()
 
@@ -120,7 +119,7 @@ if (HOMMEXX_BFB_TESTING)
 SET (SPHERE_OP_UT_F90_SRCS
   ${SRC_SHARE_DIR}/control_mod.F90
   ${SRC_SHARE_DIR}/coordinate_systems_mod.F90
-  ${SRC_SHARE_DIR}/derivative_mod_base.F90
+  ${SRC_SHARE_DIR}/derivative_mod.F90
   ${SRC_SHARE_DIR}/dimensions_mod.F90
   ${SRC_SHARE_DIR}/edgetype_mod.F90
   ${SRC_SHARE_DIR}/element_mod.F90
@@ -152,11 +151,7 @@ SET (SPHERE_OP_UT_INCLUDE_DIRS
   ${CMAKE_BINARY_DIR}/src/share/cxx
 )
 
-IF (USE_NUM_PROCS)
-  SET (NUM_CPUS ${USE_NUM_PROCS})
-ELSE()
-  SET (NUM_CPUS 1)
-ENDIF()
+set_mpi_num_cpus()
 cxx_unit_test (sphere_op_ut "${SPHERE_OP_UT_F90_SRCS}" "${SPHERE_OP_UT_CXX_SRCS}" "${SPHERE_OP_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
 endif () #BFB
 
@@ -165,7 +160,7 @@ endif () #BFB
 SET (LIMITERS_UT_F90_SRCS
   ${SRC_SHARE_DIR}/control_mod.F90
   ${SRC_SHARE_DIR}/coordinate_systems_mod.F90
-  ${SRC_SHARE_DIR}/derivative_mod_base.F90
+  ${SRC_SHARE_DIR}/derivative_mod.F90
   ${SRC_SHARE_DIR}/dimensions_mod.F90
   ${SRC_SHARE_DIR}/edgetype_mod.F90
   ${SRC_SHARE_DIR}/element_mod.F90
@@ -197,11 +192,7 @@ SET (LIMITERS_UT_INCLUDE_DIRS
   ${CMAKE_BINARY_DIR}/src/share/cxx
 )
 
-IF (USE_NUM_PROCS)
-  SET (NUM_CPUS ${USE_NUM_PROCS})
-ELSE()
-  SET (NUM_CPUS 1)
-ENDIF()
+set_mpi_num_cpus()
 cxx_unit_test (limiters_ut "${LIMITERS_UT_F90_SRCS}" "${LIMITERS_UT_CXX_SRCS}" "${LIMITERS_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
 
 ### ColumnOps unit tests
@@ -225,11 +216,7 @@ SET (COL_OPS_UT_INCLUDE_DIRS
   ${CMAKE_BINARY_DIR}/src/share/cxx
 )
 
-IF (USE_NUM_PROCS)
-  SET (NUM_CPUS ${USE_NUM_PROCS})
-ELSE()
-  SET (NUM_CPUS 1)
-ENDIF()
+set_mpi_num_cpus()
 cxx_unit_test (col_ops_ut "${COL_OPS_UT_F90_SRCS}" "${COL_OPS_UT_CXX_SRCS}" "${COL_OPS_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
 endif ()
 
@@ -264,10 +251,6 @@ SET (PPM_REMAP_UT_INCLUDE_DIRS
   ${CMAKE_BINARY_DIR}/src/share/cxx
 )
 
-IF (USE_NUM_PROCS)
-  SET (NUM_CPUS ${USE_NUM_PROCS})
-ELSE()
-  SET (NUM_CPUS 1)
-ENDIF()
+set_mpi_num_cpus()
 cxx_unit_test (ppm_remap_ut "${PPM_REMAP_UT_F90_SRCS}" "${PPM_REMAP_UT_CXX_SRCS}" "${PPM_REMAP_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
 endif ()

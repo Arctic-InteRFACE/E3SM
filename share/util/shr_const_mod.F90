@@ -20,7 +20,7 @@ MODULE shr_const_mod
    real(R8),parameter :: SHR_CONST_REARTH  = 6.37122e6_R8    ! radius of earth ~ m
    real(R8),parameter :: SHR_CONST_G       = 9.80616_R8      ! acceleration of gravity ~ m/s^2
 
-   real(R8),parameter :: SHR_CONST_STEBOL  = 5.67e-8_R8      ! Stefan-Boltzmann constant ~ W/m^2/K^4
+   real(R8),parameter :: SHR_CONST_STEBOL  = 5.670374419e-8_R8 ! Stefan-Boltzmann constant ~ W/m^2/K^4
    real(R8),parameter :: SHR_CONST_BOLTZ   = 1.38065e-23_R8  ! Boltzmann's constant ~ J/K/molecule
    real(R8),parameter :: SHR_CONST_AVOGAD  = 6.02214e26_R8   ! Avogadro's number ~ molecules/kmole
    real(R8),parameter :: SHR_CONST_RGAS    = SHR_CONST_AVOGAD*SHR_CONST_BOLTZ       ! Universal gas constant ~ J/K/kmole
@@ -29,6 +29,7 @@ MODULE shr_const_mod
    real(R8),parameter :: SHR_CONST_MWC     = 12.0107_R8      ! molecular weight carbon
    real(R8),parameter :: SHR_CONST_MWO     = 15.9994_R8      ! molecular weight oxygen
    real(R8),parameter :: SHR_CONST_MWCO2   = 44.0095_R8      ! molecular weight carbon dioxide
+   real(R8),parameter :: SHR_CONST_MWFE    = 55.845_R8       ! molecular weight iron
    real(R8),parameter :: SHR_CONST_RDAIR   = SHR_CONST_RGAS/SHR_CONST_MWDAIR        ! Dry air gas constant     ~ J/K/kg
    real(R8),parameter :: SHR_CONST_RWV     = SHR_CONST_RGAS/SHR_CONST_MWWV          ! Water vapor gas constant ~ J/K/kg
    real(R8),parameter :: SHR_CONST_ZVIR    = (SHR_CONST_RWV/SHR_CONST_RDAIR)-1.0_R8 ! RWV/RDAIR - 1.0

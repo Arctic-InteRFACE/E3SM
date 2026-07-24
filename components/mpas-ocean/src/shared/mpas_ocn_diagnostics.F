@@ -39,6 +39,7 @@ module ocn_diagnostics
    use ocn_surface_land_ice_fluxes
    use ocn_vertical_advection
    use ocn_subgrid
+   use ocn_wetting_drying, only: ocn_wetting_drying_update_land_ice
 
    implicit none
    private
@@ -141,7 +142,7 @@ contains
       logical :: full_compute = .true.
 
       real (kind=RKIND), dimension(:), pointer :: &
-        frazilSurfacePressure, landIcePressure, landIceDraft, landIceFraction
+        frazilSurfacePressure, landIcePressure, landIceDraft, landIceFraction, landIceFloatingFraction
 
       integer, dimension(:), pointer :: &
         landIceFloatingMask
@@ -181,6 +182,7 @@ contains
          call mpas_pool_get_array(forcingPool, 'landIcePressure', landIcePressure)
          call mpas_pool_get_array(forcingPool, 'landIceDraft', landIceDraft)
          call mpas_pool_get_array(forcingPool, 'landIceFloatingMask', landIceFloatingMask)
+         call mpas_pool_get_array(forcingPool, 'landIceFloatingFraction', landIceFloatingFraction)
          call mpas_pool_get_array(forcingPool, 'landIceFraction', landIceFraction)
          if (nCellsAll.gt.0 .AND. landIceFloatingMask(1) == -1) then
             call mpas_log_write('landIceFloatingMask contains the default value which likely indicates that this field is missing in the initial condition file (e.g. because it is meant for an older E3SM version).', &
@@ -399,9 +401,9 @@ contains
 
       !
       ! extrapolate tracer values to ocean surface
-      ! this eventually be a modelled process
-      ! at present, just copy k=1 tracer values onto surface values
-      ! field will be updated below is better approximations are available
+      ! this eventually could be a modelled process
+      ! at present, just copy minLevelCell tracer values onto surface values
+      ! field will be updated below as better approximations are available
 
 !TDR need to consider how to handle tracersSurfaceValues
 #ifdef MPAS_OPENACC
@@ -468,21 +470,25 @@ contains
       !
       !  compute fields needed to compute land-ice fluxes, either in the ocean model or in the coupler
       !
-      ! inputs: layerThickness, normalVelocity, landIceFraction, landIceFloatingMask
+      ! inputs: layerThickness, normalVelocity, landIcePressure, landIceFraction, landIceFloatingMask
       ! outputs:
       if (landIcePressureOn) then
          call ocn_compute_land_ice_flux_input_fields(layerThickness, normalVelocity, activeTracers, &
-                landIceFraction, landIceFloatingMask, timeLevel, indexTemperature, indexSalinity)
+                landIcePressure, landIceDraft, landIceFraction, landIceFloatingMask, timeLevel, &
+                indexTemperature, indexSalinity)
+      end if
+      if (landIcePressureOn .and. config_use_wetting_drying) then
+         call ocn_wetting_drying_update_land_ice(landIceFloatingMask, landIceFloatingFraction, err)
       end if
 
       if ( full_compute ) then
 
          !
-         ! inputs: ssh, seaIcePressure, landIceDraft
+         ! inputs: ssh, seaIcePressure, landIceDraftForSsh
          ! outputs: pressureAdjustedSSH, gradSSH
          if (landIcePressureOn) then
             call ocn_diagnostic_solve_ssh(forcingPool, ssh, seaIcePressure, &
-                   pressureAdjustedSSH, gradSSH, landIceDraft=landIceDraft )
+                   pressureAdjustedSSH, gradSSH, landIceDraftForSsh=landIceDraftForSsh )
         else
             call ocn_diagnostic_solve_ssh(forcingPool, ssh, seaIcePressure, &
                    pressureAdjustedSSH, gradSSH)
@@ -597,7 +603,7 @@ contains
 !  routine ocn_relativeVorticity_circulation
 !
 !> \brief   Computes relative vorticity and circulation
-!> \author  Mark Petersen, Doug Jacobsen, Todd Ringler
+!> \author  Mark Petersen, Doug Jacobsen, Todd Ringler, Darren Engwirda
 !> \date    November 2013
 !> \details
 !>  Computes relative vorticity and circulation
@@ -637,7 +643,7 @@ contains
 
       integer :: iVertex, iEdge, i, k
 
-      real (kind=RKIND) :: invAreaTri1, r_tmp
+      real (kind=RKIND) :: invAreaTri1, r_tmp, wall_slip_factor
 
       err = 0
 
@@ -657,24 +663,36 @@ contains
       !$omp end do
 #endif
 
+      ! no-slip = 0.0
+      ! free-slip = 1.0
+      ! partial-slip in-between
+      wall_slip_factor = config_wall_slip_factor
+
 #ifdef MPAS_OPENACC
       !$acc parallel loop &
-      !$acc          present(circulation, relativeVorticity, areaTriangle, edgesOnVertex, &
-      !$acc                  maxLevelVertexBot, dcEdge, normalVelocity, edgeSignOnVertex, &
-      !$acc                  minLevelVertexTop) &
-      !$acc          private(invAreaTri1, iVertex, iEdge, k, r_tmp)
+      !$acc          present(circulation, relativeVorticity, edgesOnVertex, &
+      !$acc                  maxLevelVertexBot, dcEdge, normalVelocity, &
+      !$acc                  minLevelVertexTop, areaTriangle, edgeSignOnVertex) &
+      !$acc          private(invAreaTri1, i, iEdge, k, r_tmp)
 #else
-      !$omp do schedule(runtime) private(invAreaTri1, i, iEdge, k, r_tmp)
+      !$omp do schedule(runtime) &
+      !$omp          private(invAreaTri1, i, iEdge, k, r_tmp)
 #endif
       do iVertex = 1, nVerticesAll
          invAreaTri1 = 1.0_RKIND / areaTriangle(iVertex)
-         do i = 1, vertexDegree
-            iEdge = edgesOnVertex(i, iVertex)
-            do k = minLevelVertexTop(iVertex), maxLevelVertexBot(iVertex)
-              r_tmp = dcEdge(iEdge) * normalVelocity(k, iEdge)
-              circulation(k, iVertex) = circulation(k, iVertex) + edgeSignOnVertex(i, iVertex) * r_tmp
-              relativeVorticity(k, iVertex) = relativeVorticity(k, iVertex) + edgeSignOnVertex(i, iVertex) * r_tmp * invAreaTri1
+         do k = minLevelVertexTop(iVertex), maxLevelVertexBot(iVertex)
+            do i = 1, vertexDegree
+               iEdge = edgesOnVertex(i, iVertex)
+               r_tmp = edgeSignOnVertex(i, iVertex) * &
+                       dcEdge(iEdge) * normalVelocity(k, iEdge)
+               circulation(k, iVertex) = circulation(k, iVertex) + r_tmp
             end do
+            ! no-slip: curl(u) unchanged
+            ! free-slip: curl(u) = 0.0
+            ! partial-slip: curl(u) reduced
+            circulation(k, iVertex) = circulation(k, iVertex) * &
+               (1.0_RKIND - wall_slip_factor * boundaryVertex(k, iVertex))
+            relativeVorticity(k, iVertex) = circulation(k, iVertex) * invAreaTri1
          end do
       end do
 #ifndef MPAS_OPENACC
@@ -800,6 +818,12 @@ contains
          !$acc exit data copyout(wctEdge) delete(baroclinicThickness, deltaSSH, btrVelocity)
 #endif
 
+      case (thickEdgeFluxConstant)
+         do iEdge = 1, nEdgesAll
+            if ( maxLevelEdgeTop(iEdge) == 0 ) cycle
+            wctEdge(iEdge) = baroclinicThickness(iEdge)
+         end do
+
       case default
          ! Should have been caught on init
          call mpas_log_write('Thickness flux option unknown', &
@@ -857,7 +881,7 @@ contains
          iEdge, k,     &! edge and vertical loop indices
          cell1, cell2, &! neighbor cell indices across an edge
          kmin, kmax     ! min,max active vertical levels
-
+      real(kind=RKIND) :: columnThickness
       ! End preamble
       !-----------------------------------------------------------------
       ! Begin code
@@ -985,7 +1009,43 @@ contains
 #endif
 
         end if
-
+        if (config_use_spatially_variable_upwind) then
+#ifdef MPAS_OPENACC
+            !$acc parallel loop &
+            !$acc    present(layerThickEdgeMean, layerThickEdgeFlux, &
+            !$acc            minLevelEdgeBot, maxLevelEdgeTop, &
+            !$acc            upwindFactor) &
+            !$acc    private(k, kmin, kmax, columnThickness)
+#else
+            !$omp parallel
+            !$omp do schedule(runtime) private(k, kmin, kmax, cell1, cell2, columnThickness)
+#endif
+            do iEdge = 1, nEdgesAll
+              cell1 = cellsOnEdge(1,iEdge)
+              cell2 = cellsOnEdge(2,iEdge)
+              columnThickness = min(bottomDepth(cell1) + ssh(cell1), &
+                                    bottomDepth(cell2) + ssh(cell2))
+              if (columnThickness <= config_spatially_variable_upwind_hmin) then
+                upwindFactor(iEdge) = 1.0_RKIND
+              elseif (columnThickness >= config_spatially_variable_upwind_hmax) then
+                upwindFactor(iEdge) = 0.0_RKIND
+              else
+                upwindFactor(iEdge) = 1.0_RKIND - &
+                                      (columnThickness - config_spatially_variable_upwind_hmin) / &
+                                      (config_spatially_variable_upwind_hmax - config_spatially_variable_upwind_hmin)
+              end if
+              kmin = minLevelEdgeBot(iEdge)
+              kmax = maxLevelEdgeTop(iEdge)
+              do k = kmin,kmax
+                 layerThickEdgeFlux(k,iEdge) = (1.0_RKIND - upwindFactor(iEdge)) * layerThickEdgeMean(k,iEdge) &
+                                             + upwindFactor(iEdge)* layerThickEdgeFlux(k,iEdge)
+              end do
+            end do
+#ifndef MPAS_OPENACC
+            !$omp end do
+            !$omp end parallel
+#endif
+        endif
       case (thickEdgeFluxConstant)
          ! Use linearized version H*u where H is constant in time
 
@@ -1293,11 +1353,11 @@ contains
          cell1, cell2                ! neighbor cell   addresses
 
       real(kind=RKIND) :: &
-         invAreaTri1,          &! 1/triangle area
          invAreaCell1,         &! 1/cell area
          invLength,            &! 1/length
          layerThicknessVertex, &! layer thickness at vertex
-         apvm_scale_factor      ! scale factor for APVM form
+         apvm_scale_factor,    &! scale factor for APVM form
+         areaDual               ! unmaksed dual-cell overlap
 
       ! Local arrays
       ! normalizedPlanetaryVorticityVertex: earth's rotational rate
@@ -1337,25 +1397,29 @@ contains
       !$acc    present(normalizedRelativeVorticityVertex, &
       !$acc            normalizedPlanetaryVorticityVertex, &
       !$acc            relativeVorticity, fVertex, layerThickness, &
-      !$acc            areaTriangle, kiteAreasOnVertex, cellsOnVertex, &
-      !$acc            maxLevelVertexBot) &
-      !$acc    private(i, k, iCell, invAreaTri1, layerThicknessVertex)
+      !$acc            kiteAreasOnVertex, cellsOnVertex, &
+      !$acc            minLevelVertexTop, maxLevelVertexBot) &
+      !$acc    private(i, k, iCell, areaDual, layerThicknessVertex)
 #else
       !$omp parallel
       !$omp do schedule(runtime) &
-      !$omp    private(i, k, iCell, invAreaTri1, layerThicknessVertex)
+      !$omp    private(i, k, iCell, areaDual, layerThicknessVertex)
 #endif
       do iVertex = 1, nVertices
-         invAreaTri1 = 1.0_RKIND / areaTriangle(iVertex)
-         do k = 1, maxLevelVertexBot(iVertex)
+         normalizedRelativeVorticityVertex(:,iVertex) = 0.0_RKIND
+         normalizedPlanetaryVorticityVertex(:,iVertex) = 0.0_RKIND
+         do k = minLevelVertexTop(iVertex), maxLevelVertexBot(iVertex)
             layerThicknessVertex = 0.0_RKIND
+            areaDual = 0.0_RKIND  ! only the unmasked kites
             do i = 1, vertexDegree
                iCell = cellsOnVertex(i,iVertex)
                layerThicknessVertex = layerThicknessVertex &
                                     + layerThickness(k,iCell) &
                                     * kiteAreasOnVertex(i,iVertex)
+               areaDual = areaDual + cellMask(k,iCell) &
+                                    * kiteAreasOnVertex(i,iVertex)
             end do
-            layerThicknessVertex = layerThicknessVertex*invAreaTri1
+            layerThicknessVertex = layerThicknessVertex/areaDual
             if (layerThicknessVertex == 0) cycle
 
             normalizedRelativeVorticityVertex(k,iVertex) = &
@@ -2897,7 +2961,7 @@ contains
 !
 !-----------------------------------------------------------------------
    subroutine ocn_diagnostic_solve_ssh(forcingPool, ssh, seaIcePressure, &
-                pressureAdjustedSSH, gradSSH, landIceDraft)!{{{
+                pressureAdjustedSSH, gradSSH, landIceDraftForSsh)!{{{
 
       implicit none
 
@@ -2913,7 +2977,7 @@ contains
       real (kind=RKIND), dimension(:), intent(in) :: &
          seaIcePressure
       real (kind=RKIND), dimension(:), optional, intent(in) :: &
-         landIceDraft
+         landIceDraftForSsh
 
       !-----------------------------------------------------------------
       !
@@ -2956,7 +3020,7 @@ contains
          !! This first directive should be correct, but there may
          !! be a problem with the optional argument. Removing optional
          !! landIceDraft from the present list for now.
-         !!acc parallel loop present(pressureAdjustedSSH, landIceDraft)
+         !!acc parallel loop present(pressureAdjustedSSH, landIceDraftForSsh)
          !$acc parallel loop present(pressureAdjustedSSH)
 #else
          !$omp parallel
@@ -2965,7 +3029,7 @@ contains
          do iCell = 1, nCells
             ! subtract the land ice draft from the SSH so sea ice doesn't experience tilt
             ! toward land ice
-            pressureAdjustedSSH(iCell) = pressureAdjustedSSH(iCell) - landIceDraft(iCell)
+            pressureAdjustedSSH(iCell) = pressureAdjustedSSH(iCell) - landIceDraftForSsh(iCell)
          end do
 #ifndef MPAS_OPENACC
          !$omp end do
@@ -3641,7 +3705,7 @@ contains
 !-----------------------------------------------------------------------
 
    subroutine ocn_compute_land_ice_flux_input_fields(layerThickness, normalVelocity, &
-      activeTracers, landIceFraction, landIceFloatingMask, &
+      activeTracers, landIcePressure, landIceDraft, landIceFraction, landIceFloatingMask, &
       timeLevel, indexTval, indexSval)!{{{
 
       !-----------------------------------------------------------------
@@ -3656,7 +3720,7 @@ contains
          layerThickness, normalVelocity
 
       real (kind=RKIND), dimension(:), intent(in) :: &
-         landIceFraction
+         landIcePressure, landIceDraft, landIceFraction
 
       real (kind=RKIND), dimension(:,:,:), intent(in) :: &
          activeTracers
@@ -3672,7 +3736,8 @@ contains
 
       integer :: iCell, iEdge, cell1, cell2, iLevel, i
 
-      real (kind=RKIND) :: blThickness, dz, weightSum, h_nu, Gamma_turb, landIceEdgeFraction, velocityMagnitude
+      real (kind=RKIND) :: blThickness, dz, weightSum, h_nu, Gamma_turb, landIceEdgeFraction, &
+                           velocityMagnitude, rho_floatation
 
       ! Scratch Arrays
       real (kind=RKIND), dimension(:), allocatable ::  &
@@ -3690,11 +3755,32 @@ contains
 
       !-----------------------------------------------------------------
 
-      if (( trim(config_land_ice_flux_mode) == "off" ) .or.  &
-          ( trim(config_land_ice_flux_mode) == "pressure_only")) then
-         ! nothing to do here
-         return
-      end if
+      if ( trim(config_land_ice_flux_mode) == "off" ) return
+
+      if ( trim(config_land_ice_draft_mode) == "data" ) then
+
+         landIceDraftForSsh = landIceDraft
+
+      elseif ( trim(config_land_ice_draft_mode) == "pressure-dependent" ) then
+
+         rho_floatation = config_land_ice_rho_ocean
+
+#ifdef MPAS_OPENACC
+         !$acc parallel loop present(landIceDraftForSsh, landIcePressure)
+#else
+         !$omp parallel
+         !$omp do schedule(runtime)
+#endif
+         do iCell = 1, nCellsAll
+            landIceDraftForSsh(iCell) = -landIcePressure(iCell) / (rho_floatation * gravity)
+         end do
+#ifndef MPAS_OPENACC
+         !$omp end do
+         !$omp end parallel
+#endif
+      endif
+
+      if ( trim(config_land_ice_flux_mode) == "pressure_only") return
 
       call mpas_timer_start("land_ice_diagnostic_fields", .false.)
 
@@ -4586,36 +4672,6 @@ contains
       end if
 
    end subroutine ocn_validate_state!}}}
-
-   function ocn_build_log_filename(prefix, identifier) result(filename)!{{{
-      character (len=*), intent(in) :: prefix
-      integer, intent(in) :: identifier
-
-      character (len=StrKIND) :: filename
-
-      character (len=StrKIND) :: identifierString
-
-      if ( identifier .lt. 10 ) then
-         write(identifierString, '(I1)') identifier
-      else if ( identifier .lt. 100 ) then
-         write(identifierString, '(I2)') identifier
-      else if ( identifier .lt. 1000 ) then
-         write(identifierString, '(I3)') identifier
-      else if ( identifier .lt. 10000 ) then
-         write(identifierString, '(I4)') identifier
-      else if ( identifier .lt. 100000 ) then
-         write(identifierString, '(I5)') identifier
-      else if ( identifier .lt. 1000000 ) then
-         write(identifierString, '(I6)') identifier
-      else if ( identifier .lt. 10000000 ) then
-         write(identifierString, '(I7)') identifier
-      else
-         write(identifierString, '(I99)') identifier
-      end if
-
-      filename = trim(prefix) // trim(identifierString)
-
-   end function ocn_build_log_filename!}}}
 
    subroutine ocn_write_field_statistics(unitNumber, fieldName, minValue, maxValue)
       integer, intent(in) :: unitNumber

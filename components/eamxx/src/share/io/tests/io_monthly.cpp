@@ -1,24 +1,23 @@
 #include <catch2/catch.hpp>
 
 #include "share/io/eamxx_output_manager.hpp"
-#include "share/io/scorpio_input.hpp"
 
-#include "share/grid/mesh_free_grids_manager.hpp"
+#include "share/data_managers/mesh_free_grids_manager.hpp"
 
+#include "share/field/field_reader.hpp"
 #include "share/field/field_utils.hpp"
 #include "share/field/field.hpp"
-#include "share/field/field_manager.hpp"
+#include "share/data_managers/field_manager.hpp"
 
 #include "share/util/eamxx_universal_constants.hpp"
-#include "share/util/eamxx_setup_random_test.hpp"
+#include "share/core/eamxx_setup_random_test.hpp"
 #include "share/util/eamxx_time_stamp.hpp"
-#include "share/eamxx_types.hpp"
+#include "share/core/eamxx_types.hpp"
 
-#include "ekat/util/ekat_units.hpp"
-#include "ekat/ekat_parameter_list.hpp"
-#include "ekat/ekat_assert.hpp"
-#include "ekat/mpi/ekat_comm.hpp"
-#include "ekat/util/ekat_test_utils.hpp"
+#include <ekat_units.hpp>
+#include <ekat_parameter_list.hpp>
+#include <ekat_assert.hpp>
+#include <ekat_comm.hpp>
 
 #include <iomanip>
 #include <memory>
@@ -52,25 +51,17 @@ get_gm (const ekat::Comm& comm)
 
 std::shared_ptr<FieldManager>
 get_fm (const std::shared_ptr<const AbstractGrid>& grid,
-        const util::TimeStamp& t0, const int seed)
+        const util::TimeStamp& t0, int seed)
 {
   using FL  = FieldLayout;
   using FID = FieldIdentifier;
   using namespace ShortFieldTagsNames;
 
-  // Random number generation stuff
-  // NOTES
-  //  - Use integers, so we can check answers without risk of
-  //    non bfb diffs due to different order of sums.
-  //  - Uniform_int_distribution returns an int, and the randomize
-  //    util checks that return type matches the Field data type.
-  //    So wrap the int pdf in a lambda, that does the cast.
-  std::mt19937_64 engine(seed);
-  auto my_pdf = [&](std::mt19937_64& engine) -> Real {
-    std::uniform_int_distribution<int> pdf (0,100);
-    Real v = pdf(engine);
-    return v;
-  };
+  // Note: we use a discrete set of random values, so we can
+  // check answers without risk of non-bfb diffs due to ops order
+  std::vector<Real> values;
+  for (int i=0; i<=100; ++i)
+    values.push_back(static_cast<Real>(i));
 
   const int nlcols = grid->get_num_local_dofs();
   const int nlevs  = grid->get_num_vertical_levels();
@@ -84,13 +75,12 @@ get_fm (const std::shared_ptr<const AbstractGrid>& grid,
 
   auto fm = std::make_shared<FieldManager>(grid);
 
-  const auto units = ekat::units::Units::nondimensional();
   int count=0;
   for (const auto& fl : layouts) {
-    FID fid("f_"+std::to_string(count),fl,units,grid->name());
+    FID fid("f_"+std::to_string(count),fl,ekat::units::none,grid->name());
     Field f(fid);
     f.allocate_view();
-    randomize (f,engine,my_pdf);
+    randomize_discrete (f,seed++,values);
     f.get_header().get_tracking().update_time_stamp(t0);
     fm->add_field(f);
     ++count;
@@ -138,9 +128,10 @@ void write (const int seed, const ekat::Comm& comm)
   const int nsteps = 11;
   auto t = t0;
   for (int n=0; n<nsteps; ++n) {
-    om.init_timestep(t,dt);
     // Update time
     t += dt;
+
+    om.init_timestep(t,dt);
 
     // Add 1 to all fields entries
     for (const auto& name : fnames) {
@@ -165,14 +156,14 @@ void read (const int seed, const ekat::Comm& comm)
   // Get gm
   auto gm = get_gm (comm);
   auto grid = gm->get_grid("point_grid");
+  auto gids = grid->get_partitioned_dim_gids();
 
   // Get initial fields. Use wrong seed for fm, so fields are not
   // inited with right data (avoid getting right answer without reading).
   auto fm0 = get_fm(grid,t0,seed);
-  auto fm  = get_fm(grid,t0,-seed-1);
-  std::vector<std::string> fnames;
-  for (auto it : fm->get_repo()) {
-    fnames.push_back(it.second->name());
+  std::vector<Field> fields;
+  for (auto it : fm0->get_repo()) {
+    fields.push_back(it.second->clone());
   }
 
   // Get filename from timestamp
@@ -187,10 +178,6 @@ void read (const int seed, const ekat::Comm& comm)
     return fname;
   };
 
-  // Create reader pl
-  ekat::ParameterList reader_pl;
-  reader_pl.set("field_names",fnames);
-
   for (int n=0; n<12; ++n) {
     auto t = t0 + n*dt;
     auto filename = get_filename(t);
@@ -198,13 +185,10 @@ void read (const int seed, const ekat::Comm& comm)
     // There should be just one time snapshot per file
     REQUIRE(scorpio::get_dimlen(filename,"time")==1);
 
-    reader_pl.set("filename",filename);
-    AtmosphereInput reader(reader_pl,fm);
-    reader.read_variables();
+    read_fields (filename,fields,gids,comm);
 
-    for (const auto& fn : fnames) {
-      auto f0 = fm0->get_field(fn).clone();
-      auto f  = fm->get_field(fn);
+    for (const auto& f : fields) {
+      auto f0 = fm0->get_field(f.name()).clone(CloneFlags::CopyData);
       add(f0,n);
       REQUIRE (views_are_equal(f,f0));
     }
