@@ -525,7 +525,7 @@ module ocn_sediment_settling
 #ifdef MPAS_OPENACC
       !$acc parallel loop present(KECell, maxLevelCell, bottomStressCell)
 #else
-      !$omp do schedule(runtime)
+      !$omp parallel do schedule(runtime)
 #endif
       do iCell = 1, nCells
          ! the magnitude of the bottom drag is rho*C*u**2 = rho*C*(2*KE)
@@ -533,8 +533,7 @@ module ocn_sediment_settling
                            * 2.0_RKIND * KECell(maxLevelCell(iCell),iCell)
       end do
 #ifndef MPAS_OPENACC
-      !$omp end do
-      !$omp end parallel
+      !$omp end parallel do
 #endif
 
       call mpas_timer_stop('explicit bottom stress for erosion')
