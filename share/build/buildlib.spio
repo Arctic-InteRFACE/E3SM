@@ -132,6 +132,21 @@ def buildlib(bldroot, installpath, case):
     if "NETCDF_FORTRAN_PATH" in os.environ:
         cmake_opts += f"-DNetCDF_Fortran_PATH:PATH={os.environ['NETCDF_FORTRAN_PATH']} "
 
+    # On macOS/Homebrew, generic /opt/homebrew/include can contain OpenMPI's
+    # mpi.h. For mpi-serial builds, prefer explicit netcdf keg prefixes so
+    # Scorpio does not pick up unrelated MPI headers through NetCDF includes.
+    if (
+        mpilib == "mpi-serial"
+        and "NETCDF_C_PATH" not in os.environ
+        and "NETCDF_FORTRAN_PATH" not in os.environ
+    ):
+        hb_netcdf = "/opt/homebrew/opt/netcdf"
+        hb_netcdf_fortran = "/opt/homebrew/opt/netcdf-fortran"
+        if os.path.isdir(hb_netcdf):
+            cmake_opts += f"-DNetCDF_C_PATH:PATH={hb_netcdf} "
+        if os.path.isdir(hb_netcdf_fortran):
+            cmake_opts += f"-DNetCDF_Fortran_PATH:PATH={hb_netcdf_fortran} "
+
     if "PNETCDF_PATH" in os.environ and mpilib != "mpi-serial":
         cmake_opts += f"-DPnetCDF_PATH:PATH={os.environ['PNETCDF_PATH']} "
     else:

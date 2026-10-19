@@ -72,6 +72,10 @@ def buildlib(bldroot, installpath, case):
 
     fflags += f" {ffree}"
 
+    # mpi-serial includes legacy C function definitions that rely on pre-C99
+    # implicit-int behavior, so force a compatible C dialect for this external.
+    cflags = f"{cflags} -std=gnu89 -Wno-error=implicit-function-declaration"
+
     # Only need the netcdf_c library
     if "NETCDF_PATH" in os.environ:
         netcdf_args = f"NETCDF_PATH={os.environ['NETCDF_PATH']} "
