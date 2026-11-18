@@ -657,7 +657,16 @@ contains
          tracerGroupSurfaceFluxRunoff, &! runoff flux
          tracerGroupSurfaceFluxSubglacialRunoff, &! subglacial runoff flux
          tracerGroupSurfaceFluxRemoved,&! total sfc flux absorbed
-         nonLocalSurfaceTracerFlux      ! non-local fluxes (eg KPP)
+         nonLocalSurfaceTracerFlux,    &! non-local fluxes (eg KPP)
+         docrDebugInitial,             &
+         docrDebugPreAdvectionTendency, &
+         docrDebugAdvectionTendency,   &
+         docrDebugHmixTendency,        &
+         docrDebugSurfaceFluxTendency, &
+         docrDebugNonLocalTendency,    &
+         docrDebugOtherTendency,       &
+         docrDebugTotalTendency,       &
+         docrDebugFinal
 
       real (kind=RKIND), dimension(:,:,:), pointer, contiguous :: &
          tracerGroup,     &! tracers in current tracer group
@@ -665,16 +674,7 @@ contains
          activeTracers,   &! retain active tracers
          ecosysTracers,   &! retain ecosys tracers for DMS, MacroMols
          tracerGroupInteriorRestoringRate, &! int restoring timescale 
-         tracerGroupInteriorRestoringValue, &! int restoring value
-         docrDebugInitial, &
-         docrDebugPreAdvectionTendency, &
-         docrDebugAdvectionTendency, &
-         docrDebugHmixTendency, &
-         docrDebugSurfaceFluxTendency, &
-         docrDebugNonLocalTendency, &
-         docrDebugOtherTendency, &
-         docrDebugTotalTendency, &
-         docrDebugFinal
+         tracerGroupInteriorRestoringValue  ! int restoring value
 
       real (kind=RKIND), dimension(:), pointer, contiguous :: &
          sedimentBottomFlux, & ! kg/m2/s
@@ -850,7 +850,7 @@ contains
          modifiedConfigName = configBase // '_ttd_forcing'
          call mpas_pool_get_config(ocnConfigs, modifiedConfigName, &
                             config_use_tracerGroup_ttd_forcing)
-         if ( groupName == 'freshwaterTracers' ) then
+         if (groupName == 'freshwaterTracers' ) then
            if (config_use_tracerGroup_surface_restoring) &
              call mpas_log_write('surface restoring not supported for freshwaterTracers group', MPAS_LOG_CRIT)
            if (config_use_tracerGroup_interior_restoring) &
@@ -1033,18 +1033,18 @@ contains
             if (docrDebugCell >= 1 .and. docrDebugCell <= nCellsAll) then
                docrDebugCellMask(:) = 0.0_RKIND
                docrDebugCellMask(docrDebugCell) = 1.0_RKIND
-               docrDebugInitial(:,:,:) = 0.0_RKIND
-               docrDebugPreAdvectionTendency(:,:,:) = 0.0_RKIND
-               docrDebugAdvectionTendency(:,:,:) = 0.0_RKIND
-               docrDebugHmixTendency(:,:,:) = 0.0_RKIND
-               docrDebugSurfaceFluxTendency(:,:,:) = 0.0_RKIND
-               docrDebugNonLocalTendency(:,:,:) = 0.0_RKIND
-               docrDebugOtherTendency(:,:,:) = 0.0_RKIND
-               docrDebugTotalTendency(:,:,:) = 0.0_RKIND
-               docrDebugFinal(:,:,:) = 0.0_RKIND
+               docrDebugInitial(:,:) = 0.0_RKIND
+               docrDebugPreAdvectionTendency(:,:) = 0.0_RKIND
+               docrDebugAdvectionTendency(:,:) = 0.0_RKIND
+               docrDebugHmixTendency(:,:) = 0.0_RKIND
+               docrDebugSurfaceFluxTendency(:,:) = 0.0_RKIND
+               docrDebugNonLocalTendency(:,:) = 0.0_RKIND
+               docrDebugOtherTendency(:,:) = 0.0_RKIND
+               docrDebugTotalTendency(:,:) = 0.0_RKIND
+               docrDebugFinal(:,:) = 0.0_RKIND
 
                do k = 1, nVertLevels
-                  docrDebugInitial(1, k, docrDebugCell) = &
+                  docrDebugInitial(k, docrDebugCell) = &
                      tracerGroup(sinkTracer, k, docrDebugCell)
                enddo
             endif
@@ -1332,7 +1332,7 @@ contains
 
          if (docrDebugActive) then
             do k = 1, nVertLevels
-               docrDebugPreAdvectionTendency(1, k, docrDebugCell) = &
+               docrDebugPreAdvectionTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell)
                docrDebugPrevTend(k) = tracerGroupTend(sinkTracer, k, docrDebugCell)
             enddo
@@ -1384,7 +1384,7 @@ contains
 
          if (docrDebugActive) then
             do k = 1, nVertLevels
-               docrDebugAdvectionTendency(1, k, docrDebugCell) = &
+               docrDebugAdvectionTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
                docrDebugPrevTend(k) = tracerGroupTend(sinkTracer, k, docrDebugCell)
             enddo
@@ -1440,7 +1440,7 @@ contains
 
          if (docrDebugActive) then
             do k = 1, nVertLevels
-               docrDebugHmixTendency(1, k, docrDebugCell) = &
+               docrDebugHmixTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
                docrDebugPrevTend(k) = tracerGroupTend(sinkTracer, k, docrDebugCell)
             enddo
@@ -1480,7 +1480,7 @@ contains
 
          if (docrDebugActive) then
             do k = 1, nVertLevels
-               docrDebugSurfaceFluxTendency(1, k, docrDebugCell) = &
+               docrDebugSurfaceFluxTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
                docrDebugPrevTend(k) = tracerGroupTend(sinkTracer, k, docrDebugCell)
             enddo
@@ -1587,7 +1587,7 @@ contains
 
          if (docrDebugActive) then
             do k = 1, nVertLevels
-               docrDebugNonLocalTendency(1, k, docrDebugCell) = &
+               docrDebugNonLocalTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
                docrDebugPrevTend(k) = tracerGroupTend(sinkTracer, k, docrDebugCell)
             enddo
@@ -1600,12 +1600,12 @@ contains
 
          if (docrDebugActive) then
             do k = 1, nVertLevels
-               docrDebugOtherTendency(1, k, docrDebugCell) = &
+               docrDebugOtherTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
-               docrDebugTotalTendency(1, k, docrDebugCell) = &
+               docrDebugTotalTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell)
-               docrDebugFinal(1, k, docrDebugCell) = &
-                  docrDebugInitial(1, k, docrDebugCell) + &
+               docrDebugFinal(k, docrDebugCell) = &
+                  docrDebugInitial(k, docrDebugCell) + &
                   dt * tracerGroupTend(sinkTracer, k, docrDebugCell)
             enddo
             deallocate(docrDebugPrevTend)
