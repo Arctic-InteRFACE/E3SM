@@ -734,34 +734,34 @@
 			<var name="netErosionFlux" type="real" dimensions="nCells Time" units="kg m^{-3} m s^{-1}"
 				description="Erosion flux from the sea floor to the ocean bottom"
 			/>
-			<var name="docrDebugCellMask" type="real" dimensions="nCells" units="unitless"
+			<var name="docrDebugCellMask" type="real" dimensions="nCells Time" units="unitless"
 				description="Mask for the selected DOCr debug column (1.0 at selected cell, 0.0 elsewhere)"
 			/>
-			<var name="docrDebugInitial" type="real" dimensions="nVertLevels nCells" units="mmol C m^{-3}"
+			<var name="docrDebugInitial" type="real" dimensions="nVertLevels nCells Time" units="mmol C m^{-3}"
 				description="Initial DOCr column field at the debug cell"
 			/>
-			<var name="docrDebugPreAdvectionTendency" type="real" dimensions="nVertLevels nCells" units="mmol C m^{-3} s^{-1}"
+			<var name="docrDebugPreAdvectionTendency" type="real" dimensions="nVertLevels nCells Time" units="mmol C m^{-3} s^{-1}"
 				description="DOCr tendency accumulated before advection at the debug cell"
 			/>
-			<var name="docrDebugAdvectionTendency" type="real" dimensions="nVertLevels nCells" units="mmol C m^{-3} s^{-1}"
+			<var name="docrDebugAdvectionTendency" type="real" dimensions="nVertLevels nCells Time" units="mmol C m^{-3} s^{-1}"
 				description="DOCr advection tendency increment at the debug cell"
 			/>
-			<var name="docrDebugHmixTendency" type="real" dimensions="nVertLevels nCells" units="mmol C m^{-3} s^{-1}"
+			<var name="docrDebugHmixTendency" type="real" dimensions="nVertLevels nCells Time" units="mmol C m^{-3} s^{-1}"
 				description="DOCr horizontal-mixing tendency increment at the debug cell"
 			/>
-			<var name="docrDebugSurfaceFluxTendency" type="real" dimensions="nVertLevels nCells" units="mmol C m^{-3} s^{-1}"
+			<var name="docrDebugSurfaceFluxTendency" type="real" dimensions="nVertLevels nCells Time" units="mmol C m^{-3} s^{-1}"
 				description="DOCr surface-flux tendency increment at the debug cell"
 			/>
-			<var name="docrDebugNonLocalTendency" type="real" dimensions="nVertLevels nCells" units="mmol C m^{-3} s^{-1}"
+			<var name="docrDebugNonLocalTendency" type="real" dimensions="nVertLevels nCells Time" units="mmol C m^{-3} s^{-1}"
 				description="DOCr non-local KPP tendency increment at the debug cell"
 			/>
-			<var name="docrDebugOtherTendency" type="real" dimensions="nVertLevels nCells" units="mmol C m^{-3} s^{-1}"
+			<var name="docrDebugOtherTendency" type="real" dimensions="nVertLevels nCells Time" units="mmol C m^{-3} s^{-1}"
 				description="DOCr residual tendency increment after named terms at the debug cell"
 			/>
-			<var name="docrDebugTotalTendency" type="real" dimensions="nVertLevels nCells" units="mmol C m^{-3} s^{-1}"
+			<var name="docrDebugTotalTendency" type="real" dimensions="nVertLevels nCells Time" units="mmol C m^{-3} s^{-1}"
 				description="DOCr final accumulated tendency at the debug cell"
 			/>
-			<var name="docrDebugFinal" type="real" dimensions="nVertLevels nCells" units="mmol C m^{-3}"
+			<var name="docrDebugFinal" type="real" dimensions="nVertLevels nCells Time" units="mmol C m^{-3}"
 				description="DOCr estimated end-of-step field (initial + dt*tendency) at the debug cell"
 			/>
 			<var name="FESEDFLUX" type="real" dimensions="nVertLevels nCells Time" units="mmol Fe m^{-3} m s^{-1}"
