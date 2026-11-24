@@ -72,7 +72,8 @@ module ocn_tracer_advection
                                         normalVelocity, KECell,       &
                                         bottomStressCell,             &
                                         layerThickEdgeDrag,           &
-                                        netErosionFlux)!{{{
+                                        netErosionFlux,               &
+                                        sedimentSettlingTendency)!{{{
 
       !*** Input/Output parameters
 
@@ -90,6 +91,9 @@ module ocn_tracer_advection
 
       real (kind=RKIND), dimension(:), intent(out) :: &
          bottomStressCell  !< [out]  bottom shear stress (kg/m/s2)
+
+      real (kind=RKIND), dimension(:,:), intent(inout) :: &
+         sedimentSettlingTendency !< [out] thickness-weighted settling tendency of sinkTracer
 
       !*** Input parameters
 
@@ -140,7 +144,8 @@ module ocn_tracer_advection
                                              normalVelocity, KECell,           &
                                              layerThickEdgeDrag,               &
                                              bottomStressCell,                 &
-                                             netErosionFlux)
+                                             netErosionFlux,                   &
+                                             sedimentSettlingTendency)
       else
          call ocn_tracer_advection_std_tend(tracers, normalThicknessFlux, &
                                             w, layerThickness, dt, tend,  &

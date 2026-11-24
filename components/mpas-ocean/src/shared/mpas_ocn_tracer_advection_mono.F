@@ -73,7 +73,8 @@ module ocn_tracer_advection_mono
                                         netSedimentStorage,            &
                                         normalVelocity, KECell,        &
                                         layerThickEdgeDrag,            &
-                                        bottomStressCell, netErosionFlux) !{{{
+                                        bottomStressCell, netErosionFlux, &
+                                       sedimentSettlingTendency) !{{{
 
       !-----------------------------------------------------------------
       ! Input/Output parameters
@@ -90,6 +91,9 @@ module ocn_tracer_advection_mono
 
       real (kind=RKIND), dimension(:), intent(inout) :: &
          netErosionFlux      !< [out]  bottom sediment erosion flux (kg/m2/s)
+
+      real (kind=RKIND), dimension(:,:), intent(inout) :: &
+         sedimentSettlingTendency !< [out] thickness-weighted settling tendency of sinkTracer
 
       real (kind=RKIND), dimension(:), intent(out) :: &
          bottomStressCell  !< [out]  bottom shear stress (kg/m/s2)
@@ -1006,7 +1010,7 @@ module ocn_tracer_advection_mono
 #ifdef MPAS_OPENACC
            !$acc parallel loop collapse(2) &
            !$acc    present(flxIn, tracerCur, hProv, hNewInv, &
-           !$acc            workTend, cellMask, tend, &
+           !$acc            workTend, cellMask, tend, sedimentSettlingTendency, &
            !$acc            minLevelCell, maxLevelCell, bottomStressCell) &
            !$acc    private(k, kmin, kmax)
 #else
@@ -1031,8 +1035,10 @@ module ocn_tracer_advection_mono
 
            ! workTend is the thickness-weighted settling, deposition and
            ! erosion tendency; add it to the tracer tendency
+           sedimentSettlingTendency(:,iCell) = 0.0_RKIND
            do k = kmin,kmax
               tend(iTracer,k,iCell) = tend(iTracer,k,iCell) + workTend(k,iCell)
+              sedimentSettlingTendency(k,iCell) = workTend(k,iCell)
            end do
            end do ! cell loop
 #ifndef MPAS_OPENACC

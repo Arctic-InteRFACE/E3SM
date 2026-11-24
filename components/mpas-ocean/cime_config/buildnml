@@ -750,6 +750,7 @@ def buildnml(case, caseroot, compname):
                 lines.append('    <var name="docrDebugInitial"/>')
                 lines.append('    <var name="docrDebugPreAdvectionTendency"/>')
                 lines.append('    <var name="docrDebugAdvectionTendency"/>')
+                lines.append('    <var name="docrDebugSettlingTendency"/>')
                 lines.append('    <var name="docrDebugHmixTendency"/>')
                 lines.append('    <var name="docrDebugSurfaceFluxTendency"/>')
                 lines.append('    <var name="docrDebugNonLocalTendency"/>')

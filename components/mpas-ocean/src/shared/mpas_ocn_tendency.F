@@ -667,6 +667,7 @@ contains
          docrDebugInitial,             &
          docrDebugPreAdvectionTendency, &
          docrDebugAdvectionTendency,   &
+         docrDebugSettlingTendency,    &
          docrDebugHmixTendency,        &
          docrDebugSurfaceFluxTendency, &
          docrDebugNonLocalTendency,    &
@@ -687,6 +688,9 @@ contains
          netSedimentStorage, & ! kg/m2
          netErosionFlux,     & ! kg/m2/s
          bottomStressCell      ! kg/m/s2
+
+      real (kind=RKIND), dimension(:,:), pointer, contiguous :: &
+         sedimentSettlingTendency ! thickness-weighted settling tendency of sinkTracer
 
       real (kind=RKIND), dimension(:,:), pointer, contiguous :: &
          normalVelocity   ! normal velocity
@@ -936,6 +940,9 @@ contains
                call mpas_pool_get_array(ecosysAuxiliaryPool, &
                                         'docrDebugAdvectionTendency', &
                                         docrDebugAdvectionTendency)
+               call mpas_pool_get_array(ecosysAuxiliaryPool, &
+                                        'docrDebugSettlingTendency', &
+                                        docrDebugSettlingTendency)
                call mpas_pool_get_array(ecosysAuxiliaryPool, 'docrDebugHmixTendency', &
                                         docrDebugHmixTendency)
                call mpas_pool_get_array(ecosysAuxiliaryPool, &
@@ -991,6 +998,7 @@ contains
             docrDebugInitial(:,:) = 0.0_RKIND
             docrDebugPreAdvectionTendency(:,:) = 0.0_RKIND
             docrDebugAdvectionTendency(:,:) = 0.0_RKIND
+            docrDebugSettlingTendency(:,:) = 0.0_RKIND
             docrDebugHmixTendency(:,:) = 0.0_RKIND
             docrDebugSurfaceFluxTendency(:,:) = 0.0_RKIND
             docrDebugNonLocalTendency(:,:) = 0.0_RKIND
@@ -1361,6 +1369,9 @@ contains
          call mpas_pool_get_array(ecosysAuxiliaryPool, &
                                      'bottomStressCell', &
                                      bottomStressCell)
+         call mpas_pool_get_array(ecosysAuxiliaryPool, &
+                                     'sedimentSettlingTendency', &
+                                     sedimentSettlingTendency)
 
          call ocn_tracer_advection_tend(tracerGroup, &
                             normalThicknessFlux, vertAleTransportTop, &
@@ -1368,7 +1379,8 @@ contains
                             computeBudgets, skipTracer, sinkingRate, &
                             sinkTracer,sedimentBottomFlux,netSedimentStorage, &
                             normalVelocity, kineticEnergyCell, bottomStressCell, &
-                            layerThickEdgeDrag, netErosionFlux)
+                            layerThickEdgeDrag, netErosionFlux, &
+                            sedimentSettlingTendency)
 
 
          deallocate(skipTracer)
@@ -1384,8 +1396,13 @@ contains
 
          if (docrDebugHere) then
             do k = 1, nVertLevels
+               ! the advection call also adds settling, deposition and
+               ! erosion; report those separately
+               docrDebugSettlingTendency(k, docrDebugCell) = &
+                  sedimentSettlingTendency(k, docrDebugCell)
                docrDebugAdvectionTendency(k, docrDebugCell) = &
-                  tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
+                  tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k) &
+                  - docrDebugSettlingTendency(k, docrDebugCell)
                docrDebugPrevTend(k) = tracerGroupTend(sinkTracer, k, docrDebugCell)
             enddo
          endif
@@ -1604,9 +1621,16 @@ contains
                   tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
                docrDebugTotalTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell)
-               docrDebugFinal(k, docrDebugCell) = &
-                  docrDebugInitial(k, docrDebugCell) + &
-                  dt * tracerGroupTend(sinkTracer, k, docrDebugCell)
+               ! tendencies are thickness weighted; this estimate uses the
+               ! current layer thickness and excludes implicit vertical mixing
+               if (layerThickness(k, docrDebugCell) > 0.0_RKIND) then
+                  docrDebugFinal(k, docrDebugCell) = &
+                     docrDebugInitial(k, docrDebugCell) + &
+                     dt * tracerGroupTend(sinkTracer, k, docrDebugCell) &
+                     / layerThickness(k, docrDebugCell)
+               else
+                  docrDebugFinal(k, docrDebugCell) = docrDebugInitial(k, docrDebugCell)
+               endif
             enddo
             deallocate(docrDebugPrevTend)
          endif
