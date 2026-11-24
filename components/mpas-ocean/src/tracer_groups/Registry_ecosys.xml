@@ -48,7 +48,7 @@
 			possible_values=".true. or .false."
 		/>
 		<nml_option name="config_docr_debug_cell" type="integer" default_value="0" units="unitless"
-			description="Cell index for DOCr debug diagnostics; <=0 selects a default Ob River mouth column"
+			description="Global cell ID (indexToCellID) of the column for DOCr debug diagnostics; 0 or less selects the ocean cell nearest the Ob River mouth"
 			possible_values="any integer"
 		/>
 		<nml_option name="config_use_ecosysTracers_surface_value" type="logical" default_value=".false." units="unitless"

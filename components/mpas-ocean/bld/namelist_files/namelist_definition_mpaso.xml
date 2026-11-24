@@ -3249,7 +3249,7 @@ Default: Defined in namelist_defaults.xml
 
 <entry id="config_docr_debug_cell" type="integer"
 	category="tracer_forcing_ecosysTracers" group="tracer_forcing_ecosysTracers">
-Cell index for DOCr debug diagnostics; <=0 selects a default Ob River mouth column
+Global cell ID (indexToCellID) of the column for DOCr debug diagnostics; 0 or less selects the ocean cell nearest the Ob River mouth
 
 Valid values: any integer
 Default: Defined in namelist_defaults.xml

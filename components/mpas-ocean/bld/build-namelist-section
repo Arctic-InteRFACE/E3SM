@@ -644,6 +644,8 @@ add_default($nl, 'config_ecosysTracers_diagnostic_fields_level3');
 add_default($nl, 'config_ecosysTracers_diagnostic_fields_level4');
 add_default($nl, 'config_ecosysTracers_diagnostic_fields_level5');
 add_default($nl, 'config_use_ecosysTracers_iron_solubility_file');
+add_default($nl, 'config_docr_debug');
+add_default($nl, 'config_docr_debug_cell');
 
 ####################################################
 # Namelist group: tracer_forcing_freshwaterTracers #
