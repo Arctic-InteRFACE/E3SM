@@ -89,7 +89,8 @@ module ocn_tendency
              ocn_tend_vel, &
              ocn_tend_tracer, &
              ocn_tend_freq_filtered_thickness, &
-             ocn_tendency_init
+             ocn_tendency_init, &
+             ocn_tend_docr_debug_init
 
    !--------------------------------------------------------------------
    !
@@ -98,6 +99,11 @@ module ocn_tendency
    !--------------------------------------------------------------------
 
    integer :: apply_Dhf_to_hhf, use_highFreqThick_restore
+
+   ! DOCr debug column, chosen once in ocn_tend_docr_debug_init
+   integer :: docrDebugGlobalCell = 0   ! global cell ID of the debug column
+   integer :: docrDebugLocalCell = 0    ! local index on the owning rank, 0 elsewhere
+   logical :: docrDebugFieldsZeroed = .false.
 
 !***********************************************************************
 
@@ -691,9 +697,9 @@ contains
       integer, parameter :: num_fields = 8
       logical, dimension(:), allocatable :: skipTracer
       real (kind=RKIND), dimension(:), allocatable :: docrDebugPrevTend
-      logical :: docrDebugActive
-      integer :: docrDebugCell
-      integer :: nDocrDebugCells
+      logical :: docrDebugActive   ! DOCr debug diagnostics requested
+      logical :: docrDebugHere     ! this rank owns the DOCr debug column
+      integer :: docrDebugCell     ! local index of the DOCr debug column
       ! NJ-Sed
       integer :: sinkTracer
       real( kind=RKIND) :: sinkingRate
@@ -883,8 +889,8 @@ contains
          sinkTracer = 0
          sinkingRate = 0.0_RKIND
          docrDebugActive = .false.
+         docrDebugHere = .false.
          docrDebugCell = 0
-         nDocrDebugCells = 0
 
          allocate(skipTracer(nTracersGroup))
          skipTracer(:) = .false.
@@ -922,7 +928,6 @@ contains
                                          config_docr_debug_cell)
                call mpas_pool_get_array(ecosysAuxiliaryPool, 'docrDebugCellMask', &
                                         docrDebugCellMask)
-               nDocrDebugCells = size(docrDebugCellMask, dim=1)
                call mpas_pool_get_array(ecosysAuxiliaryPool, 'docrDebugInitial', &
                                         docrDebugInitial)
                call mpas_pool_get_array(ecosysAuxiliaryPool, &
@@ -945,7 +950,8 @@ contains
                                         docrDebugTotalTendency)
                call mpas_pool_get_array(ecosysAuxiliaryPool, 'docrDebugFinal', &
                                         docrDebugFinal)
-               docrDebugCell = config_docr_debug_cell
+               docrDebugCell = docrDebugLocalCell
+               docrDebugHere = (docrDebugCell > 0)
             endif
          endif
 
@@ -978,18 +984,26 @@ contains
                                   modifiedGroupName, &
                                   tracerGroupSurfaceFluxRemoved)
 
-         if (docrDebugActive) then
-            if (docrDebugCell <= 0) then
-                call ocn_select_docr_debug_cell(nCellsAll, docrDebugCell, maxLevelCell, &
-                                            latCell, lonCell, &
-                                            tracerGroupSurfaceFluxRunoff(sinkTracer, :))
-            end if
-            if (docrDebugCell >= 1 .and. docrDebugCell <= nDocrDebugCells) then
-               allocate(docrDebugPrevTend(nVertLevels))
-               docrDebugPrevTend(:) = 0.0_RKIND
-               call mpas_log_write('DOCr debug diagnostics active at cell $i', &
-                                   intArgs=(/docrDebugCell/))
-            endif
+         if (docrDebugActive .and. .not. docrDebugFieldsZeroed) then
+            ! Zero the debug fields once on every rank. Afterwards only the
+            ! debug column is written, by the rank that owns it.
+            docrDebugCellMask(:) = 0.0_RKIND
+            docrDebugInitial(:,:) = 0.0_RKIND
+            docrDebugPreAdvectionTendency(:,:) = 0.0_RKIND
+            docrDebugAdvectionTendency(:,:) = 0.0_RKIND
+            docrDebugHmixTendency(:,:) = 0.0_RKIND
+            docrDebugSurfaceFluxTendency(:,:) = 0.0_RKIND
+            docrDebugNonLocalTendency(:,:) = 0.0_RKIND
+            docrDebugOtherTendency(:,:) = 0.0_RKIND
+            docrDebugTotalTendency(:,:) = 0.0_RKIND
+            docrDebugFinal(:,:) = 0.0_RKIND
+            if (docrDebugHere) docrDebugCellMask(docrDebugCell) = 1.0_RKIND
+            docrDebugFieldsZeroed = .true.
+         endif
+
+         if (docrDebugHere) then
+            allocate(docrDebugPrevTend(nVertLevels))
+            docrDebugPrevTend(:) = 0.0_RKIND
          endif
 
          !
@@ -1029,25 +1043,11 @@ contains
          !$omp end parallel
          end if
 
-         if (docrDebugActive) then
-            if (docrDebugCell >= 1 .and. docrDebugCell <= nCellsAll) then
-               docrDebugCellMask(:) = 0.0_RKIND
-               docrDebugCellMask(docrDebugCell) = 1.0_RKIND
-               docrDebugInitial(:,:) = 0.0_RKIND
-               docrDebugPreAdvectionTendency(:,:) = 0.0_RKIND
-               docrDebugAdvectionTendency(:,:) = 0.0_RKIND
-               docrDebugHmixTendency(:,:) = 0.0_RKIND
-               docrDebugSurfaceFluxTendency(:,:) = 0.0_RKIND
-               docrDebugNonLocalTendency(:,:) = 0.0_RKIND
-               docrDebugOtherTendency(:,:) = 0.0_RKIND
-               docrDebugTotalTendency(:,:) = 0.0_RKIND
-               docrDebugFinal(:,:) = 0.0_RKIND
-
-               do k = 1, nVertLevels
-                  docrDebugInitial(k, docrDebugCell) = &
-                     tracerGroup(sinkTracer, k, docrDebugCell)
-               enddo
-            endif
+         if (docrDebugHere) then
+            do k = 1, nVertLevels
+               docrDebugInitial(k, docrDebugCell) = &
+                  tracerGroup(sinkTracer, k, docrDebugCell)
+            enddo
          endif
 
          !
@@ -1330,7 +1330,7 @@ contains
             call mpas_timer_stop("TTD " // groupName)
          endif ! TTD
 
-         if (docrDebugActive) then
+         if (docrDebugHere) then
             do k = 1, nVertLevels
                docrDebugPreAdvectionTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell)
@@ -1382,7 +1382,7 @@ contains
          !$acc    copyout(tracerGroupTend) &
          !$acc    delete(tracerGroup)
 
-         if (docrDebugActive) then
+         if (docrDebugHere) then
             do k = 1, nVertLevels
                docrDebugAdvectionTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
@@ -1438,7 +1438,7 @@ contains
             !$omp end parallel
          endif ! compute budgets
 
-         if (docrDebugActive) then
+         if (docrDebugHere) then
             do k = 1, nVertLevels
                docrDebugHmixTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
@@ -1478,7 +1478,7 @@ contains
                                tracerGroupTend, err)
          end if
 
-         if (docrDebugActive) then
+         if (docrDebugHere) then
             do k = 1, nVertLevels
                docrDebugSurfaceFluxTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
@@ -1585,7 +1585,7 @@ contains
             call mpas_timer_stop("non-local flux from KPP")
          end if ! KPP
 
-         if (docrDebugActive) then
+         if (docrDebugHere) then
             do k = 1, nVertLevels
                docrDebugNonLocalTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
@@ -1598,7 +1598,7 @@ contains
          call ocn_frazil_forcing_tracers(meshPool, tracersPool, &
                      groupName, forcingPool, tracerGroupTend, ecosysFrazilForcingPool, err)
 
-         if (docrDebugActive) then
+         if (docrDebugHere) then
             do k = 1, nVertLevels
                docrDebugOtherTendency(k, docrDebugCell) = &
                   tracerGroupTend(sinkTracer, k, docrDebugCell) - docrDebugPrevTend(k)
@@ -1629,67 +1629,98 @@ contains
 
 !***********************************************************************
 !
-!  routine ocn_select_docr_debug_cell
+!  routine ocn_tend_docr_debug_init
 !
-!> \brief   Select the DOCr debug column
+!> \brief   Select the DOCr debug column once, on the rank that owns it
+!> \details
+!>  config_docr_debug_cell is a global cell ID (indexToCellID). If it is
+!>  0 or less, the ocean cell nearest the Ob River mouth is used. The
+!>  column is chosen among owned cells only, consistently across all MPI
+!>  ranks, so exactly one rank writes the debug diagnostics.
 !
 !-----------------------------------------------------------------------
 
-   subroutine ocn_select_docr_debug_cell(nCells, requestedCell, maxLevelCellIn, &
-                                         latCellIn, lonCellIn, runoffFlux)
+   subroutine ocn_tend_docr_debug_init(domain, err)!{{{
 
-      integer, intent(in) :: nCells
-      integer, intent(inout) :: requestedCell
-      integer, dimension(:), intent(in) :: maxLevelCellIn
-      real (kind=RKIND), dimension(:), intent(in) :: latCellIn, lonCellIn
-      real (kind=RKIND), dimension(:), intent(in) :: runoffFlux
+      type (domain_type), intent(inout) :: domain !< Input/Output: domain
+      integer, intent(out) :: err                 !< Output: error flag
 
-      integer :: iCell
-      integer :: selectedCell
-      real (kind=RKIND) :: bestRunoff, bestDist2, dist2, dlon
-      real (kind=RKIND) :: latDeg, lonDeg
+      logical, pointer :: config_docr_debug
+      integer, pointer :: config_docr_debug_cell
+
+      integer :: iCell, targetCell, candidateCell, nFound, isOwner
+      real (kind=RKIND) :: dlon, dist2, localBest, globalBest
+      real (kind=RKIND) :: latLocal, lonLocal, latSelected, lonSelected
+
       real (kind=RKIND), parameter :: deg2rad = 0.017453292519943295_RKIND
       real (kind=RKIND), parameter :: obLat = 66.6_RKIND * deg2rad
       real (kind=RKIND), parameter :: obLon = 71.3_RKIND * deg2rad
-      real (kind=RKIND), parameter :: minLat = 60.0_RKIND
-      real (kind=RKIND), parameter :: maxLat = 78.0_RKIND
-      real (kind=RKIND), parameter :: minLon = 55.0_RKIND
-      real (kind=RKIND), parameter :: maxLon = 95.0_RKIND
 
-      bestRunoff = -1.0_RKIND
-      do iCell = 1, nCells
-         if (maxLevelCellIn(iCell) <= 0) cycle
-         latDeg = latCellIn(iCell) / deg2rad
-         lonDeg = modulo(lonCellIn(iCell) / deg2rad + 360.0_RKIND, 360.0_RKIND)
-         if (latDeg >= minLat .and. latDeg <= maxLat .and. &
-             lonDeg >= minLon .and. lonDeg <= maxLon) then
-            if (runoffFlux(iCell) > bestRunoff) then
-               bestRunoff = runoffFlux(iCell)
-               selectedCell = iCell
+      err = 0
+      docrDebugGlobalCell = 0
+      docrDebugLocalCell = 0
+      docrDebugFieldsZeroed = .false.
+
+      call mpas_pool_get_config(domain % configs, 'config_docr_debug', config_docr_debug)
+      if (.not. config_docr_debug) return
+      call mpas_pool_get_config(domain % configs, 'config_docr_debug_cell', config_docr_debug_cell)
+
+      if (config_docr_debug_cell > 0) then
+         targetCell = config_docr_debug_cell
+      else
+         ! nearest owned ocean cell to the Ob River mouth on this rank
+         localBest = huge(1.0_RKIND)
+         candidateCell = huge(1)
+         do iCell = 1, nCellsOwned
+            if (maxLevelCell(iCell) <= 0) cycle
+            dlon = abs(lonCell(iCell) - obLon)
+            if (dlon > pii) dlon = 2.0_RKIND*pii - dlon
+            dist2 = (latCell(iCell) - obLat)**2 + dlon**2
+            if (dist2 < localBest) then
+               localBest = dist2
+               candidateCell = indexToCellID(iCell)
             endif
+         enddo
+         ! nearest over all ranks; ties go to the smallest global ID
+         call mpas_dmpar_min_real(domain % dminfo, localBest, globalBest)
+         if (localBest > globalBest) candidateCell = huge(1)
+         call mpas_dmpar_min_int(domain % dminfo, candidateCell, targetCell)
+      endif
+
+      ! find the owned local cell with that global ID
+      do iCell = 1, nCellsOwned
+         if (indexToCellID(iCell) == targetCell) then
+            docrDebugLocalCell = iCell
+            exit
          endif
       enddo
-      if (selectedCell > 0 .and. bestRunoff > 0.0_RKIND) then
-         requestedCell = selectedCell
+
+      isOwner = 0
+      latLocal = 0.0_RKIND
+      lonLocal = 0.0_RKIND
+      if (docrDebugLocalCell > 0) then
+         isOwner = 1
+         latLocal = latCell(docrDebugLocalCell) / deg2rad
+         lonLocal = lonCell(docrDebugLocalCell) / deg2rad
+      endif
+      call mpas_dmpar_sum_int(domain % dminfo, isOwner, nFound)
+      call mpas_dmpar_sum_real(domain % dminfo, latLocal, latSelected)
+      call mpas_dmpar_sum_real(domain % dminfo, lonLocal, lonSelected)
+
+      if (nFound /= 1) then
+         call mpas_log_write('DOCr debug: global cell ID $i is owned by $i ranks; ' // &
+                             'config_docr_debug_cell must be a valid global cell ID', &
+                             MPAS_LOG_CRIT, intArgs=(/targetCell, nFound/))
+         err = 1
          return
       endif
 
-      bestDist2 = huge(1.0_RKIND)
-      do iCell = 1, nCells
-         if (maxLevelCellIn(iCell) <= 0) cycle
-         dlon = abs(lonCellIn(iCell) - obLon)
-         if (dlon > 3.14159265358979323846_RKIND) then
-            dlon = 6.28318530717958647692_RKIND - dlon
-         endif
-         dist2 = (latCellIn(iCell) - obLat)**2 + dlon**2
-         if (dist2 < bestDist2) then
-            bestDist2 = dist2
-            selectedCell = iCell
-            requestedCell = selectedCell
-         endif
-      enddo
+      docrDebugGlobalCell = targetCell
+      call mpas_log_write('DOCr debug diagnostics active at global cell ID $i ' // &
+                          '(lat $r, lon $r)', intArgs=(/docrDebugGlobalCell/), &
+                          realArgs=(/latSelected, lonSelected/))
 
-   end subroutine ocn_select_docr_debug_cell
+   end subroutine ocn_tend_docr_debug_init!}}}
 
 !***********************************************************************
 !

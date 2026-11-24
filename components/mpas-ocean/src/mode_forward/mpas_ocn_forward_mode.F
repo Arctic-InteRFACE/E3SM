@@ -504,6 +504,8 @@ module ocn_forward_mode
       ierr = ior(ierr, err_tmp)
       call ocn_tendency_init(err_tmp)
       ierr = ior(ierr,err_tmp)
+      call ocn_tend_docr_debug_init(domain, err_tmp)
+      ierr = ior(ierr,err_tmp)
       call ocn_vertical_advection_init(err_tmp)
       if ( configVertAdvMethod == vertAdvRemap ) &
          call ocn_vertical_remap_init(err_tmp)
