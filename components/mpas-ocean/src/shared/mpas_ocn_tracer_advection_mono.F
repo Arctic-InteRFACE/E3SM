@@ -1006,8 +1006,7 @@ module ocn_tracer_advection_mono
 #ifdef MPAS_OPENACC
            !$acc parallel loop collapse(2) &
            !$acc    present(flxIn, tracerCur, hProv, hNewInv, &
-           !$acc            workTend, cellMask, &
-           !$acc            activeTracerVerticalAdvectionTendency, &
+           !$acc            workTend, cellMask, tend, &
            !$acc            minLevelCell, maxLevelCell, bottomStressCell) &
            !$acc    private(k, kmin, kmax)
 #else
@@ -1030,9 +1029,10 @@ module ocn_tracer_advection_mono
                  hNew(:,iCell), dt, kmin, kmax, sedimentBottomFlux(iCell), &
                  netSedimentStorage(iCell),bottomStressCell(iCell),netErosionFlux(iCell))
 
+           ! workTend is the thickness-weighted settling, deposition and
+           ! erosion tendency; add it to the tracer tendency
            do k = kmin,kmax
-              activeTracerVerticalAdvectionTendency(iTracer,k,iCell) = &
-                 activeTracerVerticalAdvectionTendency(iTracer,k,iCell) + workTend(k,iCell)
+              tend(iTracer,k,iCell) = tend(iTracer,k,iCell) + workTend(k,iCell)
            end do
            end do ! cell loop
 #ifndef MPAS_OPENACC
